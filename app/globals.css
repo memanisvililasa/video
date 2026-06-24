@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: light; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { color: #152035; background: #fff; font-family: Arial, Helvetica, sans-serif; }
+::selection { background: #DDE6FF; color: #152035; }
+
+@layer components {
+  .prose-copy h2 { @apply mt-12 text-2xl font-extrabold tracking-[-.035em] text-ink sm:text-3xl; }
+  .prose-copy h3 { @apply mt-8 text-lg font-bold text-ink; }
+  .prose-copy p { @apply mt-4 text-[15px] leading-7 text-slate-600; }
+  .prose-copy ul { @apply mt-4 space-y-2 pl-5 text-[15px] leading-7 text-slate-600; }
+  .prose-copy li { @apply pl-1; }
+  .prose-copy li::marker { color: #3563F6; }
+}
