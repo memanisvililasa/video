@@ -1,25 +1,36 @@
-export type ApiErrorCode =
-  | "UNSUPPORTED_URL"
-  | "PUBLIC_ACCESS_DENIED"
-  | "METADATA_FAILED"
-  | "DOWNLOAD_FAILED"
-  | "FILE_TOO_LARGE"
-  | "VIDEO_TOO_LONG"
-  | "PROTECTED_CONTENT"
-  | "AUTH_REQUIRED"
-  | "RATE_LIMITED"
-  | "VALIDATION_ERROR"
-  | "NOT_IMPLEMENTED"
-  | "INTERNAL_ERROR";
+export const API_ERROR_CODES = {
+  INVALID_URL: "INVALID_URL",
+  UNSUPPORTED_URL: "UNSUPPORTED_URL",
+  PRIVATE_OR_LOCAL_URL: "PRIVATE_OR_LOCAL_URL",
+  AUTH_REQUIRED: "AUTH_REQUIRED",
+  PROTECTED_CONTENT: "PROTECTED_CONTENT",
+  RATE_LIMITED: "RATE_LIMITED",
+  FILE_TOO_LARGE: "FILE_TOO_LARGE",
+  VIDEO_TOO_LONG: "VIDEO_TOO_LONG",
+  EXTRACTION_FAILED: "EXTRACTION_FAILED",
+  DOWNLOAD_FAILED: "DOWNLOAD_FAILED",
+  INTERNAL_ERROR: "INTERNAL_ERROR"
+} as const;
+
+export type ApiErrorCode = (typeof API_ERROR_CODES)[keyof typeof API_ERROR_CODES];
+
+export type ApiSuccess<T> = {
+  ok: true;
+  data: T;
+};
 
 export type ApiError = {
   code: ApiErrorCode;
   message: string;
+  details?: Record<string, unknown>;
 };
 
-export type ApiResponse<T> =
-  | { ok: true; data: T }
-  | { ok: false; error: ApiError };
+export type ApiFailure = {
+  ok: false;
+  error: ApiError;
+};
+
+export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
 
 export type VideoFormat = {
   id: string;
@@ -43,19 +54,51 @@ export type VideoMetadata = {
   formats: VideoFormat[];
 };
 
-export type PreparedFile = {
+export type DownloadJobStatus = "queued" | "processing" | "ready" | "failed";
+
+export type DownloadJob = {
+  id: string;
+  status: DownloadJobStatus;
+  createdAt: string;
+  updatedAt?: string;
+  expiresAt?: string;
+  fileId?: string;
+  message?: string;
+};
+
+export type DownloadFile = {
   id: string;
   downloadUrl: string;
   filename: string;
   sizeBytes: number;
+  contentType: string;
   expiresAt: string;
 };
+
+export type PreparedFile = DownloadFile;
 
 export type ExtractRequest = {
   url: string;
 };
 
+export type ExtractResponse = ApiResponse<VideoMetadata>;
+
 export type DownloadRequest = {
   url: string;
   formatId: string;
 };
+
+export type DownloadResponse = ApiResponse<{
+  job: DownloadJob;
+  file?: DownloadFile;
+}>;
+
+export type HealthResponse = ApiResponse<{
+  status: "ok";
+  timestamp: string;
+  checks: {
+    app: "ok";
+    storage?: "ok" | "not_configured" | "not_checked";
+    ffmpeg?: "ok" | "not_configured" | "not_checked";
+  };
+}>;
