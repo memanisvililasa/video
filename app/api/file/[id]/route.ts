@@ -1,6 +1,9 @@
+import { createReadStream } from "node:fs";
+import { Readable } from "node:stream";
 import { NextRequest, NextResponse } from "next/server";
 import { API_ERROR_CODES, API_ERROR_STATUS, createApiErrorResponse } from "@/lib/errors";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { getPreparedFile } from "@/lib/storage/local-storage";
 
 function errorResponse(code: keyof typeof API_ERROR_CODES, message?: string, status = API_ERROR_STATUS[code]) {
   return NextResponse.json(createApiErrorResponse(API_ERROR_CODES[code], message), { status });
@@ -27,7 +30,22 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
       return errorResponse("DOWNLOAD_FAILED", "Некорректный идентификатор файла.", 400);
     }
 
-    return errorResponse("DOWNLOAD_FAILED", "Реальная отдача файла ещё не реализована.", 501);
+    const file = await getPreparedFile(id);
+    if (!file) {
+      return errorResponse("DOWNLOAD_FAILED", "Файл не найден или срок хранения истёк.", 404);
+    }
+
+    const stream = Readable.toWeb(createReadStream(file.path));
+    return new NextResponse(stream as BodyInit, {
+      status: 200,
+      headers: {
+        "Content-Type": file.contentType,
+        "Content-Length": String(file.sizeBytes),
+        "Content-Disposition": `attachment; filename="${file.filename.replace(/["\\]/g, "_")}"`,
+        "Cache-Control": "private, max-age=0, no-store",
+        "X-Content-Type-Options": "nosniff"
+      }
+    });
   } catch {
     return errorResponse("INTERNAL_ERROR");
   }

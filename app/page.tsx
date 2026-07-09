@@ -61,7 +61,7 @@ export default function HomePage() {
 
       <section className="mx-auto max-w-5xl px-5 pb-16 sm:px-8 sm:pb-20">
         <LegalCallout>
-          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, приватные аккаунты или технические ограничения платформ. Backend API, extractor-ы, FFmpeg и серверный download flow не реализованы на Этапе 2.
+          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, приватные аккаунты или технические ограничения платформ. На Этапе 4 поддерживаются только публичные прямые HTTP(S)-ссылки на медиафайлы; платформенные extractor-ы остаются безопасными placeholders.
         </LegalCallout>
       </section>
     </>

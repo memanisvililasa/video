@@ -1,7 +1,12 @@
 import { AppError } from "@/lib/errors";
+import { genericDirectMediaExtractor } from "@/lib/extractors/generic-direct-media";
+import { placeholderExtractors } from "@/lib/extractors/placeholders";
 import type { Extractor } from "@/lib/extractors/types";
 
-const extractors: Extractor[] = [];
+const extractors: Extractor[] = [
+  ...placeholderExtractors,
+  genericDirectMediaExtractor
+];
 
 export function listExtractors(): readonly Extractor[] {
   return extractors;

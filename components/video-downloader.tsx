@@ -81,12 +81,12 @@ function isAbortError(error: unknown): boolean {
 }
 
 function formatDownloadMessage(payload: DownloadPayload): string {
-  const baseMessage = payload.job.message ?? `Download API принял stub-задание ${payload.job.id}.`;
+  const baseMessage = payload.job.message ?? `Download API подготовил задание ${payload.job.id}.`;
   if (!payload.file) {
-    return `${baseMessage} Реальный серверный download pipeline будет добавлен позже.`;
+    return baseMessage;
   }
 
-  return `${baseMessage} Stub-файл: ${payload.file.filename}. Автоматическая отдача через /api/file/[id] отключена до реализации файлового endpoint.`;
+  return `${baseMessage} Файл: ${payload.file.filename}. Ссылка: ${payload.file.downloadUrl}.`;
 }
 
 async function postJson<TResponse>(path: string, body: ExtractRequest | DownloadRequest, signal?: AbortSignal): Promise<ApiResponse<TResponse>> {
@@ -245,7 +245,7 @@ export function VideoDownloader() {
             Скачивание начинается с проверки прав и публичной ссылки
           </h2>
           <p className="mt-4 text-sm leading-6 text-slate-600 sm:text-base">
-            Вставьте URL, получите безопасные metadata из API skeleton, выберите формат и подтвердите права на контент.
+            Вставьте URL, получите безопасные metadata из API, выберите формат и подтвердите права на контент.
           </p>
           <div className="mt-6">
             <StatusMessage
@@ -291,10 +291,10 @@ export function VideoDownloader() {
                 <StatusMessage tone="neutral" title="Проверьте формат" text={validationError} />
               )}
               {state === "validating" && <StatusMessage tone="loading" title="Валидация URL" text="Проверяем формат ссылки и допустимый протокол." />}
-              {state === "extracting" && <StatusMessage tone="loading" title="Получение данных" text="Запрашиваем безопасные stub metadata через /api/extract." />}
+              {state === "extracting" && <StatusMessage tone="loading" title="Получение данных" text="Запрашиваем безопасные metadata через /api/extract." />}
               {state === "error" && <StatusMessage tone="error" title="Ссылка не прошла проверку" text={error} />}
               {state === "success" && (
-                <StatusMessage tone="success" title="API skeleton ответил" text={downloadMessage || "Запрос обработан в безопасном stub-режиме без создания файла."} />
+                <StatusMessage tone="success" title="Файл подготовлен" text={downloadMessage || "Запрос обработан."} />
               )}
             </div>
           </form>

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { API_ERROR_CODES, API_ERROR_STATUS, createApiErrorResponse, createApiSuccessResponse } from "@/lib/errors";
+import { API_ERROR_CODES, API_ERROR_STATUS, createApiErrorResponse, createApiSuccessResponse, getApiErrorStatus, toApiErrorResponse } from "@/lib/errors";
+import { prepareDownload } from "@/lib/jobs/download-service";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { validateVideoUrl } from "@/lib/security/url-validation";
-import type { DownloadJob, DownloadRequest, DownloadResponse } from "@/lib/types";
+import type { ApiErrorCode, DownloadRequest, DownloadResponse } from "@/lib/types";
 
 const MAX_BODY_BYTES = 8 * 1024;
-const DOWNLOAD_JOB_TTL_MS = 24 * 60 * 60 * 1000;
 const DOWNLOAD_BODY_KEYS = ["url", "formatId"] as const;
 
 type BodyResult = { ok: true; body: DownloadRequest } | { ok: false; response: NextResponse };
@@ -16,8 +16,8 @@ function isJsonContentType(contentType: string | null): boolean {
   return mediaType === "application/json" || Boolean(mediaType?.endsWith("+json"));
 }
 
-function errorResponse(code: keyof typeof API_ERROR_CODES, message?: string, status = API_ERROR_STATUS[code]) {
-  return NextResponse.json(createApiErrorResponse(API_ERROR_CODES[code], message), { status });
+function errorResponse(code: ApiErrorCode, message?: string, status = API_ERROR_STATUS[code]) {
+  return NextResponse.json(createApiErrorResponse(code, message), { status });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -31,15 +31,15 @@ function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): 
 
 function validateDownloadBody(value: unknown): BodyResult {
   if (!isRecord(value) || !hasExactKeys(value, DOWNLOAD_BODY_KEYS)) {
-    return { ok: false, response: errorResponse("INVALID_URL", "Ожидается JSON-объект вида { url: string; formatId: string }.") };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.INVALID_URL, "Ожидается JSON-объект вида { url: string; formatId: string }.") };
   }
 
   if (typeof value.url !== "string") {
-    return { ok: false, response: errorResponse("INVALID_URL", "Поле url должно быть строкой.") };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.INVALID_URL, "Поле url должно быть строкой.") };
   }
 
   if (typeof value.formatId !== "string") {
-    return { ok: false, response: errorResponse("INVALID_URL", "Поле formatId должно быть строкой.") };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.INVALID_URL, "Поле formatId должно быть строкой.") };
   }
 
   return { ok: true, body: { url: value.url, formatId: value.formatId } };
@@ -47,23 +47,23 @@ function validateDownloadBody(value: unknown): BodyResult {
 
 async function readJsonBody(request: NextRequest): Promise<BodyResult> {
   if (!isJsonContentType(request.headers.get("content-type"))) {
-    return { ok: false, response: errorResponse("INVALID_URL", "Ожидается JSON-тело запроса.") };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.INVALID_URL, "Ожидается JSON-тело запроса.") };
   }
 
   const contentLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-    return { ok: false, response: errorResponse("FILE_TOO_LARGE", "Тело запроса слишком большое.", 413) };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.FILE_TOO_LARGE, "Тело запроса слишком большое.", 413) };
   }
 
   const raw = await request.text();
   if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) {
-    return { ok: false, response: errorResponse("FILE_TOO_LARGE", "Тело запроса слишком большое.", 413) };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.FILE_TOO_LARGE, "Тело запроса слишком большое.", 413) };
   }
 
   try {
     return validateDownloadBody(JSON.parse(raw) as unknown);
   } catch {
-    return { ok: false, response: errorResponse("INVALID_URL", "JSON-тело запроса должно быть корректным объектом.") };
+    return { ok: false, response: errorResponse(API_ERROR_CODES.INVALID_URL, "JSON-тело запроса должно быть корректным объектом.") };
   }
 }
 
@@ -74,18 +74,6 @@ function validateFormatId(value: unknown) {
     return { ok: false as const, message: "Укажите корректный formatId." };
   }
   return { ok: true as const, value: trimmed };
-}
-
-function createStubJob(): DownloadJob {
-  const now = Date.now();
-  return {
-    id: "stub-download-job",
-    status: "queued",
-    createdAt: new Date(now).toISOString(),
-    updatedAt: new Date(now).toISOString(),
-    expiresAt: new Date(now + DOWNLOAD_JOB_TTL_MS).toISOString(),
-    message: "Download API работает в безопасном stub-режиме. Реальная подготовка файла ещё не реализована."
-  };
 }
 
 export async function POST(request: NextRequest) {
@@ -110,16 +98,17 @@ export async function POST(request: NextRequest) {
 
     const formatIdResult = validateFormatId(bodyResult.body.formatId);
     if (!formatIdResult.ok) {
-      return errorResponse("INVALID_URL", formatIdResult.message);
+      return errorResponse(API_ERROR_CODES.INVALID_URL, formatIdResult.message);
     }
 
-    // Real download/extractor/FFmpeg pipeline will be connected in Stage 4.
-    const response: DownloadResponse = createApiSuccessResponse({
-      job: createStubJob()
+    const prepared = await prepareDownload({
+      url: bodyResult.body.url,
+      formatId: formatIdResult.value
     });
+    const response: DownloadResponse = createApiSuccessResponse(prepared);
 
     return NextResponse.json(response, { status: 200 });
-  } catch {
-    return errorResponse("INTERNAL_ERROR");
+  } catch (error) {
+    return NextResponse.json(toApiErrorResponse(error), { status: getApiErrorStatus(error) });
   }
 }
