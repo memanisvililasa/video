@@ -1,21 +1,15 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { StatusMessage } from "@/components/status-message";
 import { VideoResultCard, type VideoResult } from "@/components/video-result-card";
+import type { ApiResponse, DownloadFile, DownloadJob, DownloadRequest, DownloadResponse, ExtractRequest, ExtractResponse, VideoFormat, VideoMetadata } from "@/lib/types";
 
 type DownloaderState = "idle" | "validating" | "extracting" | "ready" | "downloading" | "success" | "error";
-
-const mockResult: VideoResult = {
-  platform: "Public video",
-  title: "Публичное видео готово к проверке",
-  duration: "03:42",
-  qualities: [
-    { id: "1080p", label: "MP4 1080p", meta: "Видео + аудио" },
-    { id: "720p", label: "MP4 720p", meta: "Оптимальный размер" },
-    { id: "audio", label: "Audio", meta: "Только звук" }
-  ]
+type DownloadPayload = {
+  job: DownloadJob;
+  file?: DownloadFile;
 };
 
 function validateUrl(value: string): string | null {
@@ -36,30 +30,112 @@ function validateUrl(value: string): string | null {
   return null;
 }
 
-function getPlatformLabel(value: string): string {
+function formatDuration(seconds?: number): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds < 0) return "Длительность неизвестна";
+  const rounded = Math.floor(seconds);
+  const minutes = Math.floor(rounded / 60);
+  const rest = rounded % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatQuality(format: VideoFormat): string {
+  const parts = [format.quality, format.ext.toUpperCase()].filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : format.label;
+}
+
+function formatMeta(format: VideoFormat): string {
+  const media = [format.hasVideo ? "видео" : null, format.hasAudio ? "аудио" : null].filter(Boolean).join(" + ");
+  const size = format.width && format.height ? `${format.width}x${format.height}` : null;
+  return [media || "медиа", size].filter(Boolean).join(" · ");
+}
+
+function mapMetadataToResult(metadata: VideoMetadata): VideoResult {
+  return {
+    platform: metadata.platform,
+    title: metadata.title,
+    duration: formatDuration(metadata.durationSeconds),
+    qualities: metadata.formats.map((format) => ({
+      id: format.id,
+      label: formatQuality(format),
+      meta: formatMeta(format)
+    }))
+  };
+}
+
+async function readApiResponse<T>(response: Response): Promise<ApiResponse<T>> {
   try {
-    return new URL(value.trim()).hostname.replace(/^www\./, "");
+    return await response.json() as ApiResponse<T>;
   } catch {
-    return "Public video";
+    return {
+      ok: false,
+      error: {
+        code: "INTERNAL_ERROR",
+        message: "API вернул некорректный ответ."
+      }
+    };
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function formatDownloadMessage(payload: DownloadPayload): string {
+  const baseMessage = payload.job.message ?? `Download API принял stub-задание ${payload.job.id}.`;
+  if (!payload.file) {
+    return `${baseMessage} Реальный серверный download pipeline будет добавлен позже.`;
+  }
+
+  return `${baseMessage} Stub-файл: ${payload.file.filename}. Автоматическая отдача через /api/file/[id] отключена до реализации файлового endpoint.`;
+}
+
+async function postJson<TResponse>(path: string, body: ExtractRequest | DownloadRequest, signal?: AbortSignal): Promise<ApiResponse<TResponse>> {
+  const response = await fetch(path, {
+    method: "POST",
+    credentials: "omit",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    signal,
+    body: JSON.stringify(body)
+  });
+
+  return readApiResponse<TResponse>(response);
 }
 
 export function VideoDownloader() {
   const [url, setUrl] = useState("");
   const [state, setState] = useState<DownloaderState>("idle");
   const [error, setError] = useState("");
-  const [selectedQuality, setSelectedQuality] = useState(mockResult.qualities[0].id);
+  const [result, setResult] = useState<VideoResult | null>(null);
+  const [selectedQuality, setSelectedQuality] = useState("");
   const [rightsConfirmed, setRightsConfirmed] = useState(false);
+  const [downloadMessage, setDownloadMessage] = useState("");
+  const extractAbortRef = useRef<AbortController | null>(null);
+  const downloadAbortRef = useRef<AbortController | null>(null);
 
   const validationError = useMemo(() => validateUrl(url), [url]);
   const canSubmit = state !== "validating" && state !== "extracting" && state !== "downloading";
-  const result = { ...mockResult, platform: getPlatformLabel(url) };
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  useEffect(() => {
+    return () => {
+      extractAbortRef.current?.abort();
+      downloadAbortRef.current?.abort();
+    };
+  }, []);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canSubmit) return;
+
+    extractAbortRef.current?.abort();
+    downloadAbortRef.current?.abort();
 
     const message = validateUrl(url);
     setError("");
+    setDownloadMessage("");
+    setResult(null);
+    setSelectedQuality("");
     setRightsConfirmed(false);
 
     if (message) {
@@ -70,25 +146,93 @@ export function VideoDownloader() {
 
     setState("validating");
 
-    // Этап 2: безопасный frontend mock. Реальный API анализа ссылки будет подключён на Этапе 3.
-    window.setTimeout(() => {
-      setState("extracting");
-      window.setTimeout(() => setState("ready"), 700);
-    }, 450);
+    const requestBody: ExtractRequest = { url: url.trim() };
+    const controller = new AbortController();
+    extractAbortRef.current = controller;
+    setState("extracting");
+
+    try {
+      const apiResponse: ExtractResponse = await postJson<VideoMetadata>("/api/extract", requestBody, controller.signal);
+      if (extractAbortRef.current !== controller) return;
+
+      if (!apiResponse.ok) {
+        setError(apiResponse.error.message);
+        setState("error");
+        return;
+      }
+
+      const nextResult = mapMetadataToResult(apiResponse.data);
+      if (nextResult.qualities.length === 0) {
+        setError("API не вернул доступные форматы.");
+        setState("error");
+        return;
+      }
+
+      setResult(nextResult);
+      setSelectedQuality(nextResult.qualities[0].id);
+      setState("ready");
+    } catch (requestError) {
+      if (isAbortError(requestError)) return;
+      setError("Не удалось связаться с API проверки ссылки.");
+      setState("error");
+    } finally {
+      if (extractAbortRef.current === controller) {
+        extractAbortRef.current = null;
+      }
+    }
   }
 
-  function handleDownload() {
-    if (!rightsConfirmed) return;
+  async function handleDownload() {
+    if (!rightsConfirmed || !selectedQuality) return;
+    if (state === "downloading") return;
 
+    downloadAbortRef.current?.abort();
+
+    setError("");
+    setDownloadMessage("");
     setState("downloading");
 
-    // Этап 2: имитация клиентского состояния. Серверный download flow появится только на Этапе 3.
-    window.setTimeout(() => setState("success"), 650);
+    const requestBody: DownloadRequest = {
+      url: url.trim(),
+      formatId: selectedQuality
+    };
+    const controller = new AbortController();
+    downloadAbortRef.current = controller;
+
+    try {
+      const apiResponse: DownloadResponse = await postJson<DownloadPayload>("/api/download", requestBody, controller.signal);
+      if (downloadAbortRef.current !== controller) return;
+
+      if (!apiResponse.ok) {
+        setError(apiResponse.error.message);
+        setState("error");
+        return;
+      }
+
+      setDownloadMessage(formatDownloadMessage(apiResponse.data));
+      setState("success");
+    } catch (requestError) {
+      if (isAbortError(requestError)) return;
+      setError("Не удалось связаться с API подготовки файла.");
+      setState("error");
+    } finally {
+      if (downloadAbortRef.current === controller) {
+        downloadAbortRef.current = null;
+      }
+    }
   }
 
   function handleUrlChange(value: string) {
+    extractAbortRef.current?.abort();
+    extractAbortRef.current = null;
+    downloadAbortRef.current?.abort();
+    downloadAbortRef.current = null;
     setUrl(value);
     setError("");
+    setDownloadMessage("");
+    setResult(null);
+    setSelectedQuality("");
+    setRightsConfirmed(false);
     if (state !== "idle") setState("idle");
   }
 
@@ -101,7 +245,7 @@ export function VideoDownloader() {
             Скачивание начинается с проверки прав и публичной ссылки
           </h2>
           <p className="mt-4 text-sm leading-6 text-slate-600 sm:text-base">
-            Вставьте URL, выберите качество и подтвердите права на контент. Сейчас работает только frontend mock без серверного скачивания.
+            Вставьте URL, получите безопасные metadata из API skeleton, выберите формат и подтвердите права на контент.
           </p>
           <div className="mt-6">
             <StatusMessage
@@ -147,15 +291,15 @@ export function VideoDownloader() {
                 <StatusMessage tone="neutral" title="Проверьте формат" text={validationError} />
               )}
               {state === "validating" && <StatusMessage tone="loading" title="Валидация URL" text="Проверяем формат ссылки и допустимый протокол." />}
-              {state === "extracting" && <StatusMessage tone="loading" title="Получение данных" text="Имитируем клиентское состояние анализа. Backend пока не вызывается." />}
+              {state === "extracting" && <StatusMessage tone="loading" title="Получение данных" text="Запрашиваем безопасные stub metadata через /api/extract." />}
               {state === "error" && <StatusMessage tone="error" title="Ссылка не прошла проверку" text={error} />}
               {state === "success" && (
-                <StatusMessage tone="success" title="Frontend flow завершён" text="На Этапе 3 эта кнопка будет получать подготовленный файл через API." />
+                <StatusMessage tone="success" title="API skeleton ответил" text={downloadMessage || "Запрос обработан в безопасном stub-режиме без создания файла."} />
               )}
             </div>
           </form>
 
-          {(state === "ready" || state === "downloading" || state === "success") && (
+          {result && (state === "ready" || state === "downloading" || state === "success") && (
             <div className="mt-5">
               <VideoResultCard
                 result={result}

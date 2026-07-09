@@ -44,7 +44,7 @@ export function VideoResultCard({
           </div>
           <h3 className="mt-3 text-lg font-extrabold leading-snug tracking-[-.03em] text-ink">{result.title}</h3>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            Это frontend preview. Реальные metadata, thumbnail и downloadable files будут получены через API на Этапе 3.
+            Metadata получены через API skeleton. Реальная подготовка файла и выдача download URL ещё не реализованы.
           </p>
         </div>
       </div>
@@ -88,7 +88,7 @@ export function VideoResultCard({
         className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-bold text-white transition hover:bg-[#254FDD] disabled:cursor-not-allowed disabled:bg-slate-300"
       >
         <Icon name={isDownloading ? "sparkle" : "download"} className="h-4 w-4" />
-        {isDownloading ? "Готовим frontend-состояние" : "Скачать"}
+        {isDownloading ? "Отправляем в API" : "Запросить подготовку"}
       </button>
 
       {!rightsConfirmed && (
