@@ -1,5 +1,3 @@
-import { isSupportedHostname } from "@/lib/platforms";
-
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/g;
 const IPV4_LITERAL = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 
@@ -22,7 +20,7 @@ function isPrivateIpv4(hostname: string): boolean {
 }
 
 function isUnsafeHostname(hostname: string): boolean {
-  const value = hostname.toLowerCase().replace(/\.$/, "");
+  const value = hostname.toLowerCase().replace(/\.$/, "").replace(/^\[(.*)\]$/, "$1");
   return (
     value === "localhost" ||
     value.endsWith(".localhost") ||
@@ -35,11 +33,6 @@ function isUnsafeHostname(hostname: string): boolean {
   );
 }
 
-/**
- * Validates input before it can reach an adapter. This endpoint never fetches
- * user-supplied URLs; future adapters must additionally pin DNS results and
- * reject private/reserved resolved addresses immediately before every request.
- */
 export function validateVideoUrl(value: unknown): UrlValidation {
   if (typeof value !== "string") return { ok: false, message: "Укажите ссылку на видео." };
 
@@ -63,11 +56,8 @@ export function validateVideoUrl(value: unknown): UrlValidation {
   }
 
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
-  if (isUnsafeHostname(hostname) && hostname !== "demo.videosave.local") {
+  if (isUnsafeHostname(hostname)) {
     return { ok: false, message: "Внутренние и локальные адреса не поддерживаются." };
-  }
-  if (!isSupportedHostname(hostname)) {
-    return { ok: false, message: "Неподдерживаемая платформа или домен." };
   }
 
   url.hostname = hostname;
@@ -75,7 +65,6 @@ export function validateVideoUrl(value: unknown): UrlValidation {
 }
 
 export function getClientIdentifier(headers: Headers): string {
-  // The identifier stays in memory only and is never emitted in application logs.
   const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   const candidate = forwarded || headers.get("x-real-ip") || "anonymous";
   return candidate.slice(0, 64).replace(/[^a-fA-F0-9:.,-]/g, "");

@@ -4,8 +4,8 @@ type RateLimitEntry = {
 };
 
 const requests = new Map<string, RateLimitEntry>();
-const WINDOW_MS = 60_000;
-const MAX_REQUESTS = 12;
+const WINDOW_MS = Math.max(1, Number(process.env.RATE_LIMIT_WINDOW_SECONDS ?? "60")) * 1000;
+const MAX_REQUESTS = Math.max(0, Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? "1000"));
 const MAX_TRACKED_CLIENTS = 10_000;
 
 function evictExpiredEntries(now: number) {
@@ -16,6 +16,8 @@ function evictExpiredEntries(now: number) {
 
 /** In-memory limiter suitable for one process. Use Vercel KV/Upstash in multi-instance production. */
 export function consumeRateLimit(key: string): { allowed: boolean; retryAfterSeconds: number } {
+  if (MAX_REQUESTS === 0) return { allowed: true, retryAfterSeconds: 0 };
+
   const now = Date.now();
   if (requests.size >= MAX_TRACKED_CLIENTS) evictExpiredEntries(now);
   // A bounded in-process fallback prevents unbounded memory use during a flood.

@@ -1,9 +1,0 @@
-<svg width="1200" height="720" viewBox="0 0 1200 720" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="720" fill="#1B2B4F"/>
-  <circle cx="945" cy="122" r="285" fill="#3563F6" fill-opacity=".45"/>
-  <circle cx="210" cy="650" r="260" fill="#3CD6A0" fill-opacity=".32"/>
-  <path d="M0 523C163 429 284 577 445 489C610 399 727 403 918 485C1041 538 1118 510 1200 443V720H0V523Z" fill="#0E1930" fill-opacity=".5"/>
-  <rect x="422" y="222" width="356" height="276" rx="34" fill="white" fill-opacity=".14" stroke="white" stroke-opacity=".36" stroke-width="2"/>
-  <path d="M565 301.5C565 287.214 580.791 278.576 592.821 286.274L685.302 345.465C696.395 352.564 696.395 368.734 685.302 375.833L592.821 435.024C580.791 442.722 565 434.084 565 419.798V301.5Z" fill="white"/>
-  <text x="600" y="571" fill="white" fill-opacity=".8" font-family="Arial, sans-serif" font-size="24" font-weight="700" text-anchor="middle">CREATIVE COMMONS DEMO</text>
-</svg>
