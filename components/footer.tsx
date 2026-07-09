@@ -3,10 +3,11 @@ import { Logo } from "@/components/logo";
 
 const navigation = [
   { href: "/how-it-works", label: "Как это работает" },
-  { href: "/rules", label: "Правила использования" },
+  { href: "/faq", label: "FAQ" },
+  { href: "/terms", label: "Условия использования" },
   { href: "/dmca", label: "DMCA / Жалобы" },
   { href: "/privacy", label: "Конфиденциальность" },
-  { href: "/contacts", label: "Контакты" }
+  { href: "/contact", label: "Контакты" }
 ];
 
 export function Footer() {

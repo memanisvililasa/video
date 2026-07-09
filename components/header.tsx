@@ -7,8 +7,9 @@ import { Logo } from "@/components/logo";
 
 const links = [
   { href: "/how-it-works", label: "Как это работает" },
-  { href: "/rules", label: "Правила" },
-  { href: "/contacts", label: "Контакты" }
+  { href: "/faq", label: "FAQ" },
+  { href: "/terms", label: "Условия" },
+  { href: "/contact", label: "Контакты" }
 ];
 
 export function Header() {
