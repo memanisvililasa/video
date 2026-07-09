@@ -95,10 +95,4 @@ export type DownloadResponse = ApiResponse<{
 
 export type HealthResponse = ApiResponse<{
   status: "ok";
-  timestamp: string;
-  checks: {
-    app: "ok";
-    storage?: "ok" | "not_configured" | "not_checked";
-    ffmpeg?: "ok" | "not_configured" | "not_checked";
-  };
 }>;
