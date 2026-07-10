@@ -8,7 +8,9 @@ import type {
   MediaJob,
   MediaJobContext,
   MediaJobFailure,
+  MediaJobDiscardHandler,
   MediaJobHandler,
+  MediaJobOutputMetadata,
   MediaJobQueueStats,
   MediaJobResult,
   MediaJobSnapshot,
@@ -22,7 +24,9 @@ export type {
   MediaJob,
   MediaJobContext,
   MediaJobFailure,
+  MediaJobDiscardHandler,
   MediaJobHandler,
+  MediaJobOutputMetadata,
   MediaJobProgressUpdater,
   MediaJobQueueStats,
   MediaJobResult,
@@ -39,6 +43,7 @@ const MAX_TERMINAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const SAFE_JOB_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_FILE_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_CONTENT_TYPE = /^[a-z0-9][a-z0-9.+-]{0,63}\/[a-z0-9][a-z0-9.+-]{0,63}$/;
+const SAFE_MEDIA_IDENTIFIER = /^[a-zA-Z0-9_.-]{1,256}$/;
 const VALID_PROCESSING_PRESETS = new Set<ProcessingPreset>([
   "original",
   "remux-to-mp4",
@@ -83,6 +88,8 @@ type InternalMediaJob = {
   job: MediaJob;
   handler?: MediaJobHandler;
   controller?: AbortController;
+  onDiscard?: MediaJobDiscardHandler;
+  discardInvoked: boolean;
   cancelRequested: boolean;
   expiresAtMs?: number;
   settled: Promise<void>;
@@ -125,7 +132,52 @@ function isCancellationError(error: unknown): boolean {
   return (error instanceof AppError && error.code === API_ERROR_CODES.JOB_CANCELLED) || isAbortError(error);
 }
 
-function sanitizeJobResult(value: unknown): MediaJobResult {
+function sanitizeOptionalIdentifier(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && SAFE_MEDIA_IDENTIFIER.test(value) ? value : undefined;
+}
+
+function sanitizeOutputMetadata(value: unknown): MediaJobOutputMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new TypeError("Media job output metadata is invalid.");
+  }
+
+  const metadata = value as Partial<MediaJobOutputMetadata>;
+  const width = metadata.width;
+  const height = metadata.height;
+  const videoCodec = sanitizeOptionalIdentifier(metadata.videoCodec);
+  const audioCodec = sanitizeOptionalIdentifier(metadata.audioCodec);
+  if (
+    typeof metadata.durationSeconds !== "number" ||
+    !Number.isFinite(metadata.durationSeconds) ||
+    metadata.durationSeconds <= 0 ||
+    typeof metadata.formatName !== "string" ||
+    !metadata.formatName ||
+    metadata.formatName.length > 256 ||
+    /[\u0000-\u001f\u007f]/.test(metadata.formatName) ||
+    typeof metadata.hasVideo !== "boolean" ||
+    typeof metadata.hasAudio !== "boolean" ||
+    (width !== undefined && (!Number.isSafeInteger(width) || width <= 0 || width > 16_384)) ||
+    (height !== undefined && (!Number.isSafeInteger(height) || height <= 0 || height > 16_384)) ||
+    (metadata.videoCodec !== undefined && videoCodec === undefined) ||
+    (metadata.audioCodec !== undefined && audioCodec === undefined)
+  ) {
+    throw new TypeError("Media job output metadata is invalid.");
+  }
+
+  return Object.freeze({
+    durationSeconds: metadata.durationSeconds,
+    formatName: metadata.formatName,
+    hasVideo: metadata.hasVideo,
+    hasAudio: metadata.hasAudio,
+    ...(width !== undefined ? { width } : {}),
+    ...(height !== undefined ? { height } : {}),
+    ...(videoCodec ? { videoCodec } : {}),
+    ...(audioCodec ? { audioCodec } : {})
+  });
+}
+
+function sanitizeJobResult(value: unknown, expectedPreset: ProcessingPreset): MediaJobResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("Media job result is invalid.");
   }
@@ -143,23 +195,31 @@ function sanitizeJobResult(value: unknown): MediaJobResult {
     /[\u0000-\u001f\u007f]/.test(result.filename) ||
     !Number.isSafeInteger(result.sizeBytes) ||
     (result.sizeBytes as number) <= 0 ||
-    typeof result.contentType !== "string" ||
-    !SAFE_CONTENT_TYPE.test(result.contentType)
+    typeof result.mimeType !== "string" ||
+    !SAFE_CONTENT_TYPE.test(result.mimeType) ||
+    typeof result.expiresAt !== "string" ||
+    !Number.isFinite(Date.parse(result.expiresAt))
   ) {
     throw new TypeError("Media job result is invalid.");
   }
 
+  const media = sanitizeOutputMetadata(result.media);
   return Object.freeze({
     fileId: result.fileId,
     downloadUrl: result.downloadUrl,
     filename: result.filename,
     sizeBytes: result.sizeBytes,
-    contentType: result.contentType
+    mimeType: result.mimeType,
+    expiresAt: result.expiresAt,
+    processingPreset: expectedPreset,
+    media
   }) as MediaJobResult;
 }
 
 function immutableSnapshot(job: MediaJob): MediaJobSnapshot {
-  const result = job.result ? Object.freeze({ ...job.result }) : undefined;
+  const result = job.result
+    ? Object.freeze({ ...job.result, media: Object.freeze({ ...job.result.media }) })
+    : undefined;
   const error = job.error ? Object.freeze({ ...job.error }) : undefined;
   return Object.freeze({
     jobId: job.jobId,
@@ -247,8 +307,22 @@ export function createMediaJobQueue(options: CreateMediaJobQueueOptions = {}): M
     }
   }
 
-  function transitionToCancelled(record: InternalMediaJob): void {
+  async function discard(record: InternalMediaJob): Promise<void> {
+    if (record.discardInvoked) return;
+    record.discardInvoked = true;
+    const onDiscard = record.onDiscard;
+    record.onDiscard = undefined;
+    if (!onDiscard) return;
+    try {
+      await onDiscard();
+    } catch {
+      // Cleanup is best effort and must not replace the job's terminal state.
+    }
+  }
+
+  async function transitionToCancelled(record: InternalMediaJob): Promise<void> {
     if (record.job.status !== "queued" && record.job.status !== "running") return;
+    await discard(record);
     record.job.error = safeFailure(API_ERROR_CODES.JOB_CANCELLED);
     transition(record, "cancelled");
   }
@@ -271,20 +345,22 @@ export function createMediaJobQueue(options: CreateMediaJobQueueOptions = {}): M
 
       if (record.job.status !== "running") return;
       if (record.cancelRequested || controller.signal.aborted) {
-        transitionToCancelled(record);
+        await transitionToCancelled(record);
         return;
       }
 
-      record.job.result = sanitizeJobResult(result);
+      record.job.result = sanitizeJobResult(result, record.job.processingPreset);
       record.job.progress = 100;
       transition(record, "ready");
+      record.onDiscard = undefined;
     } catch (error) {
       if (record.job.status !== "running") return;
       if (record.cancelRequested || controller.signal.aborted || isCancellationError(error)) {
-        transitionToCancelled(record);
+        await transitionToCancelled(record);
         return;
       }
 
+      await discard(record);
       record.job.error = handlerFailure(error);
       transition(record, "failed");
     } finally {
@@ -381,6 +457,8 @@ export function createMediaJobQueue(options: CreateMediaJobQueueOptions = {}): M
         progress: 0
       },
       handler: enqueueOptions.handler,
+      onDiscard: enqueueOptions.onDiscard,
+      discardInvoked: false,
       cancelRequested: false,
       settled,
       resolveSettled
@@ -403,7 +481,7 @@ export function createMediaJobQueue(options: CreateMediaJobQueueOptions = {}): M
       const pendingIndex = pendingJobIds.indexOf(jobId);
       if (pendingIndex >= 0) pendingJobIds.splice(pendingIndex, 1);
       record.cancelRequested = true;
-      transitionToCancelled(record);
+      await transitionToCancelled(record);
       scheduleDrain();
       return immutableSnapshot(record.job);
     }

@@ -14,6 +14,10 @@ export function createFileId(): string {
   return `file_${compactUuid()}`;
 }
 
+export function createSourceId(): string {
+  return `source_${compactUuid()}`;
+}
+
 export function getJobExpiresAt(now = Date.now()): string {
   return new Date(now + env.tempFileTtlMinutes * 60 * 1000).toISOString();
 }

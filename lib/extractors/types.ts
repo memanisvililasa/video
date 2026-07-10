@@ -5,6 +5,7 @@ export type ExtractorContext = {
   metadataTimeoutSeconds?: number;
   downloadTimeoutSeconds?: number;
   maxFileSizeBytes?: number;
+  onDownloadProgress?: (downloadedBytes: number, totalBytes?: number) => void;
 };
 
 export type DownloadContext = ExtractorContext & {

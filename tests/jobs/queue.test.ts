@@ -36,7 +36,19 @@ function safeResult(suffix: string): MediaJobResult {
     downloadUrl: `/api/file/${fileId}`,
     filename: `${suffix}.mp4`,
     sizeBytes: 1024,
-    contentType: "video/mp4"
+    mimeType: "video/mp4",
+    expiresAt: "2026-01-01T01:00:00.000Z",
+    processingPreset: "original",
+    media: {
+      durationSeconds: 12,
+      formatName: "mov,mp4,m4a,3gp,3g2,mj2",
+      hasVideo: true,
+      hasAudio: true,
+      width: 1920,
+      height: 1080,
+      videoCodec: "h264",
+      audioCodec: "aac"
+    }
   };
 }
 
@@ -113,7 +125,7 @@ describe("in-memory media job queue", () => {
     expect(harness.queue.getJob(enqueued.jobId)).toMatchObject({
       status: "ready",
       progress: 100,
-      result: safeResult("one"),
+      result: { ...safeResult("one"), processingPreset: "compatible-mp4" },
       completedAt: new Date(harness.now()).toISOString()
     });
   });

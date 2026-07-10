@@ -1,20 +1,47 @@
+import { AppError } from "@/lib/errors";
 import type { StoredFile } from "@/lib/storage/types";
+import { API_ERROR_CODES } from "@/lib/types";
 
-const files = new Map<string, StoredFile>();
+export type FileRegistry = {
+  registerFile: (file: StoredFile) => StoredFile;
+  getRegisteredFile: (fileId: string) => StoredFile | null;
+  deleteRegisteredFile: (fileId: string) => boolean;
+  listRegisteredFiles: () => StoredFile[];
+};
 
-export function registerFile(file: StoredFile): StoredFile {
-  files.set(file.id, file);
-  return file;
+export function createFileRegistry(): FileRegistry {
+  const files = new Map<string, StoredFile>();
+
+  return Object.freeze({
+    registerFile(file: StoredFile): StoredFile {
+      if (files.has(file.id)) {
+        throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Не удалось зарегистрировать подготовленный файл.");
+      }
+      const stored = Object.freeze({ ...file });
+      files.set(file.id, stored);
+      return stored;
+    },
+    getRegisteredFile(fileId: string): StoredFile | null {
+      return files.get(fileId) ?? null;
+    },
+    deleteRegisteredFile(fileId: string): boolean {
+      return files.delete(fileId);
+    },
+    listRegisteredFiles(): StoredFile[] {
+      return [...files.values()];
+    }
+  });
 }
 
-export function getRegisteredFile(fileId: string): StoredFile | null {
-  return files.get(fileId) ?? null;
-}
+type FileRegistryGlobal = typeof globalThis & {
+  __videoSaveFileRegistryV1?: FileRegistry;
+};
 
-export function deleteRegisteredFile(fileId: string): boolean {
-  return files.delete(fileId);
-}
+const registryGlobal = globalThis as FileRegistryGlobal;
+const registry = registryGlobal.__videoSaveFileRegistryV1 ?? createFileRegistry();
+registryGlobal.__videoSaveFileRegistryV1 = registry;
 
-export function listRegisteredFiles(): StoredFile[] {
-  return [...files.values()];
-}
+export const registerFile = registry.registerFile;
+export const getRegisteredFile = registry.getRegisteredFile;
+export const deleteRegisteredFile = registry.deleteRegisteredFile;
+export const listRegisteredFiles = registry.listRegisteredFiles;

@@ -22,11 +22,14 @@ export function getRelativeStoragePath(absolutePath: string): string {
   return path.relative(root, absolutePath);
 }
 
-export async function savePreparedFile(file: Omit<StoredFile, "sizeBytes"> & { sizeBytes?: number }): Promise<StoredFile> {
+export async function savePreparedFile(
+  file: Omit<StoredFile, "sizeBytes" | "kind"> & { sizeBytes?: number; kind?: StoredFile["kind"] }
+): Promise<StoredFile> {
   const fileStats = await stat(file.path);
   const storedFile: StoredFile = {
     ...file,
-    sizeBytes: file.sizeBytes ?? fileStats.size
+    sizeBytes: file.sizeBytes ?? fileStats.size,
+    kind: file.kind ?? "final"
   };
 
   return registerFile(storedFile);
@@ -34,7 +37,7 @@ export async function savePreparedFile(file: Omit<StoredFile, "sizeBytes"> & { s
 
 export async function getPreparedFile(fileId: string): Promise<StoredFile | null> {
   const file = getRegisteredFile(fileId);
-  if (!file) return null;
+  if (!file || file.kind === "source") return null;
 
   if (Date.parse(file.expiresAt) <= Date.now()) {
     return null;

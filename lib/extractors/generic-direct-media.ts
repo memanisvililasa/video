@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import { AppError } from "@/lib/errors";
 import { env } from "@/lib/config/env";
@@ -159,17 +160,23 @@ export const genericDirectMediaExtractor: Extractor = {
     const downloaded = await safeDownloadToFile(url, destinationPath, {
       maxBytes: maxFileSizeBytes(context),
       signal: context.signal,
-      timeoutSeconds: context.downloadTimeoutSeconds
+      timeoutSeconds: context.downloadTimeoutSeconds,
+      onProgress: context.onDownloadProgress
     });
 
-    assertAllowedContentType(extension, downloaded.contentType);
-    assertFileSizeAllowed(downloaded.sizeBytes, context);
+    try {
+      assertAllowedContentType(extension, downloaded.contentType);
+      assertFileSizeAllowed(downloaded.sizeBytes, context);
 
-    return {
-      path: destinationPath,
-      filename: getFilename(downloaded.finalUrl, extension),
-      contentType: downloaded.contentType ?? MEDIA_TYPES[extension][0],
-      sizeBytes: downloaded.sizeBytes
-    };
+      return {
+        path: destinationPath,
+        filename: getFilename(downloaded.finalUrl, extension),
+        contentType: downloaded.contentType ?? MEDIA_TYPES[extension][0],
+        sizeBytes: downloaded.sizeBytes
+      };
+    } catch (error) {
+      await rm(destinationPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 };

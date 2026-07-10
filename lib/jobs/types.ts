@@ -8,8 +8,22 @@ export type MediaJobResult = {
   downloadUrl: string;
   filename: string;
   sizeBytes: number;
-  contentType: string;
+  mimeType: string;
+  expiresAt: string;
+  processingPreset: ProcessingPreset;
+  media: MediaJobOutputMetadata;
 };
+
+export type MediaJobOutputMetadata = Readonly<{
+  durationSeconds: number;
+  formatName: string;
+  hasVideo: boolean;
+  hasAudio: boolean;
+  width?: number;
+  height?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+}>;
 
 export type MediaJobFailure = {
   code: ApiErrorCode;
@@ -56,9 +70,12 @@ export type MediaJobHandler = (
   updateProgress: MediaJobProgressUpdater
 ) => MediaJobResult | Promise<MediaJobResult>;
 
+export type MediaJobDiscardHandler = () => void | Promise<void>;
+
 export type EnqueueMediaJobOptions = {
   processingPreset: ProcessingPreset;
   handler: MediaJobHandler;
+  onDiscard?: MediaJobDiscardHandler;
 };
 
 export type EnqueuedMediaJob = Readonly<{

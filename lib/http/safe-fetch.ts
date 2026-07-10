@@ -1,8 +1,10 @@
 import { createWriteStream } from "node:fs";
-import { rm } from "node:fs/promises";
+import { link, rm, unlink } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { AppError } from "@/lib/errors";
 import { API_ERROR_CODES } from "@/lib/types";
 import { validateOutboundHostname, validateRedirectHostname } from "@/lib/security/ssrf";
@@ -30,6 +32,7 @@ export type SafeResponseMetadata = {
 
 export type SafeDownloadOptions = SafeFetchOptions & {
   maxBytes: number;
+  onProgress?: (downloadedBytes: number, totalBytes?: number) => void;
 };
 
 export type SafeDownloadResult = SafeResponseMetadata & {
@@ -38,8 +41,14 @@ export type SafeDownloadResult = SafeResponseMetadata & {
 
 type RequestMethod = "HEAD" | "GET";
 
-type RequestResult = SafeResponseMetadata & {
+export type SafeDownloadStreamResult = SafeResponseMetadata & {
   stream?: http.IncomingMessage;
+};
+
+type RequestResult = SafeDownloadStreamResult;
+
+export type SafeFileDownloaderDependencies = {
+  requestDownload: (url: URL, options: SafeFetchOptions) => Promise<SafeDownloadStreamResult>;
 };
 
 type RequestLookupOptions = {
@@ -272,51 +281,82 @@ export async function safeGetMetadata(url: URL, options: SafeFetchOptions = {}):
   return result;
 }
 
-export async function safeDownloadToFile(url: URL, destinationPath: string, options: SafeDownloadOptions): Promise<SafeDownloadResult> {
-  const result = await requestWithRedirects(url, "GET", {}, {
-    timeoutSeconds: options.timeoutSeconds ?? DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
-    maxRedirects: options.maxRedirects,
-    signal: options.signal
-  });
+/** @internal Exported for fake-stream tests without real network requests. */
+export function createSafeFileDownloader(dependencies: SafeFileDownloaderDependencies) {
+  return async function downloadToFile(
+    url: URL,
+    destinationPath: string,
+    options: SafeDownloadOptions
+  ): Promise<SafeDownloadResult> {
+    const signal = options.signal ?? new AbortController().signal;
+    const result = await dependencies.requestDownload(url, {
+      timeoutSeconds: options.timeoutSeconds ?? DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
+      maxRedirects: options.maxRedirects,
+      signal
+    });
 
-  assertReadableStatus(result);
+    assertReadableStatus(result);
 
-  if (typeof result.contentLength === "number" && result.contentLength > options.maxBytes) {
-    result.stream?.destroy();
-    throw new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413);
-  }
+    if (typeof result.contentLength === "number" && result.contentLength > options.maxBytes) {
+      result.stream?.destroy();
+      throw new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413);
+    }
 
-  const stream = result.stream;
-  if (!stream) {
-    throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник не вернул тело файла.", 502);
-  }
+    const stream = result.stream;
+    if (!stream) {
+      throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник не вернул тело файла.", 502);
+    }
 
-  const file = createWriteStream(destinationPath, { flags: "wx" });
-  let sizeBytes = 0;
-
-  try {
-    await new Promise<void>((resolve, reject) => {
-      stream.on("data", (chunk: Buffer) => {
+    const partialPath = `${destinationPath}.download`;
+    const file = createWriteStream(partialPath, { flags: "wx" });
+    const totalBytes = result.contentLength;
+    let sizeBytes = 0;
+    let finalOwned = false;
+    let partialOwned = false;
+    file.once("open", () => {
+      partialOwned = true;
+    });
+    const meter = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
         sizeBytes += chunk.length;
         if (sizeBytes > options.maxBytes) {
-          stream.destroy(new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413));
+          callback(new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413));
+          return;
         }
-      });
-
-      stream.on("error", reject);
-      file.on("error", reject);
-      file.on("finish", resolve);
-      stream.pipe(file);
+        try {
+          options.onProgress?.(sizeBytes, totalBytes);
+        } catch {
+          // Progress observers must not affect download integrity.
+        }
+        callback(null, chunk);
+      }
     });
-  } catch (error) {
-    file.destroy();
-    stream.destroy();
-    await rm(destinationPath, { force: true }).catch(() => undefined);
-    throw error instanceof AppError ? error : new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Не удалось сохранить файл.", 500);
-  }
 
-  return {
-    ...result,
-    sizeBytes
+    try {
+      await pipeline(stream, meter, file, { signal });
+      if (sizeBytes <= 0 || (totalBytes !== undefined && sizeBytes !== totalBytes)) {
+        throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник вернул неполный медиафайл.", 502);
+      }
+
+      await link(partialPath, destinationPath);
+      finalOwned = true;
+      await unlink(partialPath);
+    } catch (error) {
+      file.destroy();
+      stream.destroy();
+      if (partialOwned) await rm(partialPath, { force: true }).catch(() => undefined);
+      if (finalOwned) await rm(destinationPath, { force: true }).catch(() => undefined);
+      if (signal.aborted) throw createAbortError();
+      throw error instanceof AppError
+        ? error
+        : new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Не удалось сохранить файл.", 500);
+    }
+
+    const { stream: _stream, ...metadata } = result;
+    return { ...metadata, sizeBytes };
   };
 }
+
+export const safeDownloadToFile = createSafeFileDownloader({
+  requestDownload: (url, options) => requestWithRedirects(url, "GET", {}, options)
+});

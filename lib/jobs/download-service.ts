@@ -7,6 +7,13 @@ import { cleanupExpiredFiles } from "@/lib/storage/cleanup";
 import { ensureJobDirectory, getRelativeStoragePath, savePreparedFile } from "@/lib/storage/local-storage";
 import { API_ERROR_CODES, type DownloadFile, type DownloadJob, type DownloadRequest } from "@/lib/types";
 import { validateVideoUrl } from "@/lib/security/url-validation";
+import { createDefaultDownloadOrchestrationService } from "@/lib/jobs/download-orchestrator";
+
+const downloadOrchestration = createDefaultDownloadOrchestrationService();
+
+export const enqueueDownloadJob = downloadOrchestration.enqueueDownloadJob;
+export const getDownloadJob = downloadOrchestration.getDownloadJob;
+export const cancelDownloadJob = downloadOrchestration.cancelDownloadJob;
 
 export type PreparedDownload = {
   job: DownloadJob;

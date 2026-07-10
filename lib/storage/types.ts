@@ -8,6 +8,7 @@ export type StoredFile = {
   contentType: string;
   createdAt: string;
   expiresAt: string;
+  kind: "source" | "final";
 };
 
 export type CleanupResult = {
