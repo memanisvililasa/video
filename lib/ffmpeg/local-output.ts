@@ -5,7 +5,9 @@ import { assertSafePath, safeJoin } from "@/lib/storage/path-safety";
 import { API_ERROR_CODES } from "@/lib/types";
 
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
-const SAFE_MP4_FILENAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,135}\.mp4$/;
+const SAFE_OUTPUT_BASENAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,135}$/;
+
+type LocalMediaOutputExtension = "mp4" | "m4a";
 
 export type LocalMediaOutput = {
   finalPath: string;
@@ -58,11 +60,11 @@ async function assertRegularNonEmptyFile(candidate: string, maxOutputBytes: numb
   return stats.size;
 }
 
-/** @internal Shared output lifecycle for trusted local FFmpeg operations. */
-export async function prepareLocalMp4Output(
+async function prepareLocalMediaOutput(
   outputPath: string,
   inputRealPath: string,
-  getAllowedRoot: () => string
+  getAllowedRoot: () => string,
+  extension: LocalMediaOutputExtension
 ): Promise<LocalMediaOutput> {
   if (
     typeof outputPath !== "string" ||
@@ -76,7 +78,9 @@ export async function prepareLocalMp4Output(
   }
 
   const filename = path.basename(outputPath);
-  if (path.extname(filename) !== ".mp4" || !SAFE_MP4_FILENAME.test(filename)) {
+  const expectedExtension = `.${extension}`;
+  const basename = filename.slice(0, -expectedExtension.length);
+  if (path.extname(filename) !== expectedExtension || !SAFE_OUTPUT_BASENAME.test(basename)) {
     throw processingFailedError();
   }
 
@@ -116,7 +120,7 @@ export async function prepareLocalMp4Output(
   let partialPath: string;
   try {
     finalPath = safeJoin(canonicalOutputDirectory, filename);
-    partialPath = safeJoin(canonicalOutputDirectory, `${filename.slice(0, -4)}.partial.mp4`);
+    partialPath = safeJoin(canonicalOutputDirectory, `${basename}.partial.${extension}`);
   } catch {
     throw processingFailedError();
   }
@@ -163,4 +167,22 @@ export async function prepareLocalMp4Output(
       await Promise.all(removals);
     }
   };
+}
+
+/** @internal Shared MP4 output lifecycle for trusted local FFmpeg operations. */
+export function prepareLocalMp4Output(
+  outputPath: string,
+  inputRealPath: string,
+  getAllowedRoot: () => string
+): Promise<LocalMediaOutput> {
+  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "mp4");
+}
+
+/** @internal Shared M4A output lifecycle for trusted local FFmpeg operations. */
+export function prepareLocalM4aOutput(
+  outputPath: string,
+  inputRealPath: string,
+  getAllowedRoot: () => string
+): Promise<LocalMediaOutput> {
+  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "m4a");
 }

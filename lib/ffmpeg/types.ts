@@ -135,3 +135,17 @@ export type CompatibleMp4Result = MediaProcessingResult<"compatible-mp4"> & {
   audioEncoder: "aac" | null;
   threads: number;
 };
+
+export type AudioExtractionOptions = {
+  inputPath: string;
+  outputPath: string;
+  signal?: AbortSignal;
+};
+
+export type AudioExtractionResult = MediaProcessingResult<"audio-only"> & {
+  audioEncoder: "aac";
+  bitRate: 192_000;
+  sourceAudioStreamIndex: number;
+  channels?: number;
+  threads: number;
+};
