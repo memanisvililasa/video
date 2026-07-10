@@ -5,6 +5,13 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function positiveIntegerFromEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export const env = {
   maxFileSizeMb: numberFromEnv("MAX_FILE_SIZE_MB", 500),
   maxVideoDurationMinutes: numberFromEnv("MAX_VIDEO_DURATION_MINUTES", 30),
@@ -15,7 +22,10 @@ export const env = {
   ffmpegPath: process.env.FFMPEG_PATH || "ffmpeg",
   ffprobePath: process.env.FFPROBE_PATH || "ffprobe",
   downloadTimeoutSeconds: numberFromEnv("DOWNLOAD_TIMEOUT_SECONDS", 120),
-  ffmpegTimeoutSeconds: numberFromEnv("FFMPEG_TIMEOUT_SECONDS", 300),
+  ffprobeTimeoutSeconds: positiveIntegerFromEnv("FFPROBE_TIMEOUT_SECONDS", 15),
+  ffmpegTimeoutSeconds: positiveIntegerFromEnv("FFMPEG_TIMEOUT_SECONDS", 900),
+  ffmpegKillGraceSeconds: positiveIntegerFromEnv("FFMPEG_KILL_GRACE_SECONDS", 2),
+  ffmpegThreads: positiveIntegerFromEnv("FFMPEG_THREADS", 2),
   maxConcurrentJobs: numberFromEnv("MAX_CONCURRENT_JOBS", 2),
   redisUrl: process.env.REDIS_URL || "",
   nodeEnv: process.env.NODE_ENV || "development"

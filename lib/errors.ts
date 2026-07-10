@@ -25,8 +25,18 @@ export const API_ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   RATE_LIMITED: "Слишком много запросов. Повторите попытку позже.",
   FILE_TOO_LARGE: "Файл превышает допустимый размер.",
   VIDEO_TOO_LONG: "Видео превышает допустимую длительность.",
+  VIDEO_RESOLUTION_TOO_HIGH: "Разрешение видео превышает допустимое.",
   EXTRACTION_FAILED: "Не удалось получить данные видео.",
   DOWNLOAD_FAILED: "Не удалось подготовить файл.",
+  FFMPEG_NOT_AVAILABLE: "Сервис обработки медиа временно недоступен.",
+  FFPROBE_FAILED: "Не удалось проверить медиафайл.",
+  INVALID_MEDIA_FILE: "Файл повреждён или не является поддерживаемым медиафайлом.",
+  UNSUPPORTED_CODEC: "Кодек не поддерживается выбранным режимом обработки.",
+  PROCESSING_FAILED: "Не удалось обработать медиафайл.",
+  PROCESSING_TIMEOUT: "Обработка медиафайла превысила допустимое время.",
+  OUTPUT_TOO_LARGE: "Подготовленный файл превышает допустимый размер.",
+  JOB_CANCELLED: "Задание было отменено.",
+  JOB_NOT_FOUND: "Задание не найдено или срок его хранения истёк.",
   INTERNAL_ERROR: "Попробуйте позже."
 };
 
@@ -39,8 +49,18 @@ export const API_ERROR_STATUS: Record<ApiErrorCode, number> = {
   RATE_LIMITED: 429,
   FILE_TOO_LARGE: 413,
   VIDEO_TOO_LONG: 422,
+  VIDEO_RESOLUTION_TOO_HIGH: 422,
   EXTRACTION_FAILED: 502,
   DOWNLOAD_FAILED: 500,
+  FFMPEG_NOT_AVAILABLE: 503,
+  FFPROBE_FAILED: 500,
+  INVALID_MEDIA_FILE: 422,
+  UNSUPPORTED_CODEC: 415,
+  PROCESSING_FAILED: 500,
+  PROCESSING_TIMEOUT: 504,
+  OUTPUT_TOO_LARGE: 413,
+  JOB_CANCELLED: 409,
+  JOB_NOT_FOUND: 404,
   INTERNAL_ERROR: 500
 };
 
