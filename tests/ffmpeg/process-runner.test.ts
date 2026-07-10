@@ -351,7 +351,9 @@ describe("stage 5.1 API error mappings", () => {
       [API_ERROR_CODES.VIDEO_TOO_LONG]: 422,
       [API_ERROR_CODES.VIDEO_RESOLUTION_TOO_HIGH]: 422,
       [API_ERROR_CODES.JOB_CANCELLED]: 409,
-      [API_ERROR_CODES.JOB_NOT_FOUND]: 404
+      [API_ERROR_CODES.JOB_NOT_FOUND]: 404,
+      [API_ERROR_CODES.QUEUE_FULL]: 503,
+      [API_ERROR_CODES.INVALID_JOB_STATE]: 409
     };
 
     for (const [code, status] of Object.entries(expectedStatuses) as Array<[ApiErrorCode, number]>) {

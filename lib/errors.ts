@@ -38,6 +38,8 @@ export const API_ERROR_MESSAGES: Record<ApiErrorCode, string> = {
   OUTPUT_TOO_LARGE: "Подготовленный файл превышает допустимый размер.",
   JOB_CANCELLED: "Задание было отменено.",
   JOB_NOT_FOUND: "Задание не найдено или срок его хранения истёк.",
+  QUEUE_FULL: "Очередь обработки заполнена. Повторите попытку позже.",
+  INVALID_JOB_STATE: "Операция недоступна для текущего состояния задания.",
   INTERNAL_ERROR: "Попробуйте позже."
 };
 
@@ -63,6 +65,8 @@ export const API_ERROR_STATUS: Record<ApiErrorCode, number> = {
   OUTPUT_TOO_LARGE: 413,
   JOB_CANCELLED: 409,
   JOB_NOT_FOUND: 404,
+  QUEUE_FULL: 503,
+  INVALID_JOB_STATE: 409,
   INTERNAL_ERROR: 500
 };
 
