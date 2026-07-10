@@ -1,5 +1,3 @@
-import { link, lstat, realpath, rm, unlink } from "node:fs/promises";
-import path from "node:path";
 import { env } from "@/lib/config/env";
 import { AppError } from "@/lib/errors";
 import {
@@ -7,6 +5,7 @@ import {
   MediaProcessError,
   runMediaProcess
 } from "@/lib/ffmpeg/process-runner";
+import { prepareLocalMp4Output, type LocalMediaOutput } from "@/lib/ffmpeg/local-output";
 import {
   probeMediaFile,
   resolveLocalMediaFile,
@@ -19,13 +18,11 @@ import type {
   RemuxMediaOptions,
   RemuxMediaResult
 } from "@/lib/ffmpeg/types";
-import { assertSafePath, normalizeStorageRoot, safeJoin } from "@/lib/storage/path-safety";
+import { normalizeStorageRoot } from "@/lib/storage/path-safety";
 import { API_ERROR_CODES } from "@/lib/types";
 
 export type { RemuxMediaOptions, RemuxMediaResult } from "@/lib/ffmpeg/types";
 
-const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
-const SAFE_MP4_FILENAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,135}\.mp4$/;
 const ALLOWED_DEMUXERS = "mov,matroska,webm";
 const MP4_VIDEO_COPY_CODECS = new Set(["h264", "hevc", "av1", "vp9", "mpeg4"]);
 const MP4_AUDIO_COPY_CODECS = new Set(["aac", "mp3", "ac3", "eac3", "alac", "opus"]);
@@ -38,12 +35,6 @@ export type MediaRemuxDependencies = {
   getAllowedRoot: () => string;
   timeoutMs: number;
   maxOutputBytes: number;
-};
-
-type RemuxOutputPaths = {
-  finalPath: string;
-  partialPath: string;
-  jobDirectory: string;
 };
 
 function processingFailedError(): AppError {
@@ -59,108 +50,6 @@ function invalidVideoInputError(): AppError {
 
 function unsupportedCodecError(): AppError {
   return new AppError(API_ERROR_CODES.UNSUPPORTED_CODEC);
-}
-
-function getErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  return typeof error.code === "string" ? error.code : undefined;
-}
-
-function assertContained(root: string, candidate: string): void {
-  try {
-    assertSafePath(root, candidate);
-  } catch {
-    throw processingFailedError();
-  }
-}
-
-async function pathExists(candidate: string): Promise<boolean> {
-  try {
-    await lstat(candidate);
-    return true;
-  } catch (error) {
-    if (getErrorCode(error) === "ENOENT") return false;
-    throw processingFailedError();
-  }
-}
-
-async function resolveRemuxOutputPaths(
-  outputPath: string,
-  inputRealPath: string,
-  getAllowedRoot: () => string
-): Promise<RemuxOutputPaths> {
-  if (
-    typeof outputPath !== "string" ||
-    !outputPath ||
-    outputPath.includes("\0") ||
-    URL_SCHEME.test(outputPath) ||
-    !path.isAbsolute(outputPath) ||
-    path.normalize(outputPath) !== outputPath
-  ) {
-    throw processingFailedError();
-  }
-
-  const filename = path.basename(outputPath);
-  if (path.extname(filename) !== ".mp4" || !SAFE_MP4_FILENAME.test(filename)) {
-    throw processingFailedError();
-  }
-
-  let configuredRoot: string;
-  try {
-    configuredRoot = getAllowedRoot();
-  } catch {
-    throw processingFailedError();
-  }
-
-  if (typeof configuredRoot !== "string" || !path.isAbsolute(configuredRoot) || configuredRoot.includes("\0")) {
-    throw processingFailedError();
-  }
-
-  const lexicalRoot = path.resolve(configuredRoot);
-  assertContained(lexicalRoot, outputPath);
-
-  let canonicalRoot: string;
-  let canonicalOutputDirectory: string;
-  try {
-    canonicalRoot = await realpath(lexicalRoot);
-    canonicalOutputDirectory = await realpath(path.dirname(outputPath));
-    const [rootStats, directoryStats] = await Promise.all([
-      lstat(canonicalRoot),
-      lstat(canonicalOutputDirectory)
-    ]);
-    if (!rootStats.isDirectory() || !directoryStats.isDirectory()) throw processingFailedError();
-  } catch (error) {
-    if (error instanceof AppError) throw error;
-    throw processingFailedError();
-  }
-
-  assertContained(canonicalRoot, canonicalOutputDirectory);
-  if (canonicalOutputDirectory !== path.dirname(inputRealPath)) throw processingFailedError();
-
-  let finalPath: string;
-  let partialPath: string;
-  try {
-    finalPath = safeJoin(canonicalOutputDirectory, filename);
-    partialPath = safeJoin(canonicalOutputDirectory, `${filename.slice(0, -4)}.partial.mp4`);
-  } catch {
-    throw processingFailedError();
-  }
-
-  if (finalPath === inputRealPath || partialPath === inputRealPath || finalPath === partialPath) {
-    throw processingFailedError();
-  }
-
-  const [finalExists, partialExists] = await Promise.all([
-    pathExists(finalPath),
-    pathExists(partialPath)
-  ]);
-  if (finalExists || partialExists) throw processingFailedError();
-
-  return {
-    finalPath,
-    partialPath,
-    jobDirectory: canonicalOutputDirectory
-  };
 }
 
 function playableVideoStreams(metadata: MediaProbeResult): readonly MediaVideoStream[] {
@@ -247,19 +136,6 @@ function validateRemuxedMetadata(input: MediaProbeResult, output: MediaProbeResu
   }
 }
 
-async function assertRegularNonEmptyOutput(outputPath: string, maxOutputBytes: number): Promise<number> {
-  let stats;
-  try {
-    stats = await lstat(outputPath);
-  } catch {
-    throw processingFailedError();
-  }
-
-  if (stats.isSymbolicLink() || !stats.isFile() || stats.size <= 0) throw processingFailedError();
-  if (stats.size > maxOutputBytes) throw new AppError(API_ERROR_CODES.OUTPUT_TOO_LARGE);
-  return stats.size;
-}
-
 function mapMediaProcessError(error: MediaProcessError): AppError {
   switch (error.reason) {
     case "spawn":
@@ -287,13 +163,6 @@ function mapOutputProbeError(error: unknown): AppError {
   return processingFailedError();
 }
 
-async function cleanupOwnedOutput(paths: RemuxOutputPaths, processStarted: boolean, finalOwned: boolean): Promise<void> {
-  const removals: Promise<unknown>[] = [];
-  if (processStarted) removals.push(rm(paths.partialPath, { force: true }).catch(() => undefined));
-  if (finalOwned) removals.push(rm(paths.finalPath, { force: true }).catch(() => undefined));
-  await Promise.all(removals);
-}
-
 /** @internal Exported to inject fake process/probe implementations in unit tests. */
 export function createMediaRemux(dependencies: MediaRemuxDependencies) {
   if (!Number.isSafeInteger(dependencies.timeoutMs) || dependencies.timeoutMs <= 0) {
@@ -304,13 +173,11 @@ export function createMediaRemux(dependencies: MediaRemuxDependencies) {
   }
 
   return async function remuxMediaToMp4(options: RemuxMediaOptions): Promise<RemuxMediaResult> {
-    let outputPaths: RemuxOutputPaths | undefined;
-    let processStarted = false;
-    let finalOwned = false;
+    let output: LocalMediaOutput | undefined;
 
     try {
       const inputFile = await resolveLocalMediaFile(options.inputPath, dependencies.getAllowedRoot);
-      outputPaths = await resolveRemuxOutputPaths(
+      output = await prepareLocalMp4Output(
         options.outputPath,
         inputFile.realPath,
         dependencies.getAllowedRoot
@@ -319,11 +186,11 @@ export function createMediaRemux(dependencies: MediaRemuxDependencies) {
       const inputMetadata = await dependencies.probeMedia(inputFile.realPath, { signal: options.signal });
       assertStreamCopyCompatibility(inputMetadata);
 
-      processStarted = true;
+      output.markProcessStarted();
       const processResult = await dependencies.runProcess({
         tool: "ffmpeg",
-        args: buildRemuxArguments(inputFile.realPath, outputPaths.partialPath),
-        cwd: outputPaths.jobDirectory,
+        args: buildRemuxArguments(inputFile.realPath, output.partialPath),
+        cwd: output.jobDirectory,
         timeoutMs: dependencies.timeoutMs,
         signal: options.signal,
         stdout: {
@@ -337,21 +204,13 @@ export function createMediaRemux(dependencies: MediaRemuxDependencies) {
       });
       if (processResult.stdoutTruncated) throw processingFailedError();
 
-      await assertRegularNonEmptyOutput(outputPaths.partialPath, dependencies.maxOutputBytes);
-
-      try {
-        await link(outputPaths.partialPath, outputPaths.finalPath);
-        finalOwned = true;
-        await unlink(outputPaths.partialPath);
-      } catch {
-        throw processingFailedError();
-      }
-
-      const sizeBytes = await assertRegularNonEmptyOutput(outputPaths.finalPath, dependencies.maxOutputBytes);
+      await output.assertPartialFile(dependencies.maxOutputBytes);
+      await output.publish();
+      const sizeBytes = await output.assertFinalFile(dependencies.maxOutputBytes);
 
       let outputMetadata: MediaProbeResult;
       try {
-        outputMetadata = await dependencies.probeMedia(outputPaths.finalPath, { signal: options.signal });
+        outputMetadata = await dependencies.probeMedia(output.finalPath, { signal: options.signal });
       } catch (error) {
         throw mapOutputProbeError(error);
       }
@@ -361,13 +220,13 @@ export function createMediaRemux(dependencies: MediaRemuxDependencies) {
         preset: "remux-to-mp4",
         input: inputMetadata,
         output: outputMetadata,
-        outputPath: outputPaths.finalPath,
+        outputPath: output.finalPath,
         sizeBytes,
         copiedVideoStreams: playableVideoStreams(inputMetadata).length,
         copiedAudioStreams: inputMetadata.audioStreams.length
       };
     } catch (error) {
-      if (outputPaths) await cleanupOwnedOutput(outputPaths, processStarted, finalOwned);
+      if (output) await output.cleanup();
       if (error instanceof MediaProcessError) throw mapMediaProcessError(error);
       if (error instanceof AppError) throw error;
       throw processingFailedError();

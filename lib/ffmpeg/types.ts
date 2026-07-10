@@ -121,3 +121,17 @@ export type RemuxMediaResult = MediaProcessingResult<"remux-to-mp4"> & {
   copiedVideoStreams: number;
   copiedAudioStreams: number;
 };
+
+export type CompatibleMp4Options = {
+  inputPath: string;
+  outputPath: string;
+  signal?: AbortSignal;
+};
+
+export type CompatibleMp4Result = MediaProcessingResult<"compatible-mp4"> & {
+  targetWidth: number;
+  targetHeight: number;
+  videoEncoder: "libx264";
+  audioEncoder: "aac" | null;
+  threads: number;
+};
