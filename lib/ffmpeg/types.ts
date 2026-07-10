@@ -53,6 +53,7 @@ export type MediaStreamInfo = {
 export type MediaVideoStream = MediaStreamInfo & {
   width?: number;
   height?: number;
+  attachedPicture?: boolean;
   frameRate?: MediaRational;
   pixelFormat?: string;
   sampleAspectRatio?: MediaRational;
@@ -98,4 +99,25 @@ export type MediaProbeLimits = {
   maxDurationSeconds: number;
   maxPixels: number;
   maxDimension: number;
+};
+
+export type ProcessingPreset = "original" | "remux-to-mp4" | "compatible-mp4" | "audio-only";
+
+export type MediaProcessingResult<TPreset extends ProcessingPreset = ProcessingPreset> = {
+  preset: TPreset;
+  input: MediaProbeResult;
+  output: MediaProbeResult;
+  outputPath: string;
+  sizeBytes: number;
+};
+
+export type RemuxMediaOptions = {
+  inputPath: string;
+  outputPath: string;
+  signal?: AbortSignal;
+};
+
+export type RemuxMediaResult = MediaProcessingResult<"remux-to-mp4"> & {
+  copiedVideoStreams: number;
+  copiedAudioStreams: number;
 };

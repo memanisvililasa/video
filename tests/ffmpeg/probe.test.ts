@@ -166,6 +166,7 @@ describe("safe ffprobe wrapper", () => {
     expect(call.args).toContain("-show_format");
     expect(call.args).toContain("-show_streams");
     expect(call.args).toContain("-show_entries");
+    expect(call.args[call.args.indexOf("-show_entries") + 1]).toContain("stream_disposition=attached_pic");
     expect(call.args.slice(call.args.indexOf("-protocol_whitelist"), call.args.indexOf("-protocol_whitelist") + 2)).toEqual([
       "-protocol_whitelist",
       "file"
@@ -203,6 +204,29 @@ describe("safe ffprobe wrapper", () => {
     expect(result.width).toBeUndefined();
     expect(result.height).toBeUndefined();
     expect(result.videoStreams).toEqual([]);
+  });
+
+  it("marks attached pictures so video operations can exclude cover art", async () => {
+    const harness = createHarness({
+      stdout: JSON.stringify({
+        streams: [
+          {
+            index: 0,
+            codec_type: "video",
+            codec_name: "mjpeg",
+            width: 600,
+            height: 600,
+            duration: "9",
+            disposition: { attached_pic: 1 }
+          },
+          { index: 1, codec_type: "audio", codec_name: "aac", duration: "9" }
+        ],
+        format: { format_name: "mov", duration: "9", size: "5" }
+      })
+    });
+
+    const result = await harness.probe(inputPath);
+    expect(result.videoStreams[0].attachedPicture).toBe(true);
   });
 
   it("preserves multiple video and audio streams while ignoring other stream types", async () => {

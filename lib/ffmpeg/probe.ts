@@ -38,6 +38,7 @@ const ALLOWED_DEMUXERS = "mov,matroska,webm";
 const FFPROBE_SHOW_ENTRIES = [
   "format=format_name,duration,size,bit_rate",
   "stream=index,codec_type,codec_name,width,height,avg_frame_rate,r_frame_rate,bit_rate,duration,sample_rate,channels,pix_fmt,sample_aspect_ratio,color_range,color_space,color_transfer,color_primaries",
+  "stream_disposition=attached_pic",
   "stream_side_data=rotation"
 ].join(":");
 
@@ -57,7 +58,7 @@ export type MediaProbeDependencies = {
   maxDurationSeconds: number;
 };
 
-type LocalMediaFile = {
+export type LocalMediaFile = {
   realPath: string;
   sizeBytes: number;
 };
@@ -88,7 +89,8 @@ function assertLexicalContainment(root: string, candidate: string): void {
   }
 }
 
-async function resolveLocalMediaFile(inputPath: string, getAllowedRoot: () => string): Promise<LocalMediaFile> {
+/** @internal Shared by local-only media operations. */
+export async function resolveLocalMediaFile(inputPath: string, getAllowedRoot: () => string): Promise<LocalMediaFile> {
   if (
     typeof inputPath !== "string" ||
     !inputPath ||
@@ -227,11 +229,13 @@ function parseRotation(stream: Record<string, unknown>): number | undefined {
 }
 
 function parseVideoStream(stream: Record<string, unknown>, fallbackIndex: number): MediaVideoStream {
+  const disposition = isRecord(stream.disposition) ? stream.disposition : {};
   return {
     index: parseSafeInteger(stream.index) ?? fallbackIndex,
     codec: parseIdentifier(stream.codec_name),
     width: parseSafeInteger(stream.width, 1),
     height: parseSafeInteger(stream.height, 1),
+    attachedPicture: parseSafeInteger(disposition.attached_pic) === 1,
     frameRate: parseRational(stream.avg_frame_rate) ?? parseRational(stream.r_frame_rate),
     bitRate: parseSafeInteger(stream.bit_rate, 1),
     pixelFormat: parseText(stream.pix_fmt, 64),
