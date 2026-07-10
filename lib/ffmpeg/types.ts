@@ -35,19 +35,25 @@ export type MediaProcessResult = {
   durationMs: number;
 };
 
+export type MediaProcessRunner = (options: MediaProcessRunOptions) => Promise<MediaProcessResult>;
+
 export type MediaRational = {
   numerator: number;
   denominator: number;
   value: number;
 };
 
-export type MediaVideoStream = {
+export type MediaStreamInfo = {
   index: number;
-  codec?: string;
+  codec: string;
+  bitRate?: number;
+  durationSeconds?: number;
+};
+
+export type MediaVideoStream = MediaStreamInfo & {
   width?: number;
   height?: number;
   frameRate?: MediaRational;
-  bitrate?: number;
   pixelFormat?: string;
   sampleAspectRatio?: MediaRational;
   rotationDegrees?: number;
@@ -55,24 +61,41 @@ export type MediaVideoStream = {
   colorSpace?: string;
   colorTransfer?: string;
   colorPrimaries?: string;
-  durationSeconds?: number;
 };
 
-export type MediaAudioStream = {
-  index: number;
-  codec?: string;
+export type MediaAudioStream = MediaStreamInfo & {
   sampleRate?: number;
   channels?: number;
-  bitrate?: number;
-  durationSeconds?: number;
+};
+
+export type MediaFormatInfo = {
+  formatName: string;
+  containerFormats: readonly string[];
+  durationSeconds: number;
+  sizeBytes: number;
+  bitRate?: number;
 };
 
 export type MediaProbeResult = {
   durationSeconds: number;
+  formatName: string;
   containerFormats: readonly string[];
-  bitrate?: number;
+  sizeBytes: number;
+  bitRate?: number;
   hasVideo: boolean;
   hasAudio: boolean;
   videoStreams: readonly MediaVideoStream[];
   audioStreams: readonly MediaAudioStream[];
+  width?: number;
+  height?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  frameRate?: MediaRational;
+  format: MediaFormatInfo;
+};
+
+export type MediaProbeLimits = {
+  maxDurationSeconds: number;
+  maxPixels: number;
+  maxDimension: number;
 };
