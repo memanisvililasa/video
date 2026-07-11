@@ -1,35 +1,28 @@
 import { Icon } from "@/components/icons";
 import { StatusMessage } from "@/components/status-message";
+import type { MediaSelectionData, MediaSelectionOption } from "@/lib/client/media-job-state";
 
-export type VideoQuality = {
-  id: string;
-  label: string;
-  meta: string;
-};
-
-export type VideoResult = {
-  platform: string;
-  title: string;
-  duration: string;
-  qualities: VideoQuality[];
-};
+export type VideoQuality = MediaSelectionOption;
+export type VideoResult = MediaSelectionData;
 
 export function VideoResultCard({
   result,
   selectedQuality,
   rightsConfirmed,
-  isDownloading,
+  isSubmitting,
+  canSubmit,
   onQualityChange,
   onRightsChange,
-  onDownload
+  onSubmit
 }: {
   result: VideoResult;
   selectedQuality: string;
   rightsConfirmed: boolean;
-  isDownloading: boolean;
+  isSubmitting: boolean;
+  canSubmit: boolean;
   onQualityChange: (qualityId: string) => void;
   onRightsChange: (confirmed: boolean) => void;
-  onDownload: () => void;
+  onSubmit: () => void;
 }) {
   return (
     <article className="rounded-2xl border border-slate-100 bg-white p-4 shadow-card sm:p-5">
@@ -44,7 +37,7 @@ export function VideoResultCard({
           </div>
           <h3 className="mt-3 text-lg font-extrabold leading-snug tracking-[-.03em] text-ink">{result.title}</h3>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            Metadata получены через API skeleton. Реальная подготовка файла и выдача download URL ещё не реализованы.
+            Metadata получены через безопасный API. После подтверждения прав файл будет поставлен в очередь подготовки.
           </p>
         </div>
       </div>
@@ -83,12 +76,12 @@ export function VideoResultCard({
 
       <button
         type="button"
-        disabled={!rightsConfirmed || isDownloading}
-        onClick={onDownload}
+        disabled={!canSubmit || isSubmitting}
+        onClick={onSubmit}
         className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-bold text-white transition hover:bg-[#254FDD] disabled:cursor-not-allowed disabled:bg-slate-300"
       >
-        <Icon name={isDownloading ? "sparkle" : "download"} className="h-4 w-4" />
-        {isDownloading ? "Отправляем в API" : "Запросить подготовку"}
+        <Icon name={isSubmitting ? "sparkle" : "arrow"} className="h-4 w-4" />
+        {isSubmitting ? "Создаём задачу" : "Начать подготовку"}
       </button>
 
       {!rightsConfirmed && (
