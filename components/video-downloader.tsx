@@ -7,12 +7,9 @@ import { VideoResultCard } from "@/components/video-result-card";
 import type { CreateDownloadJobRequest } from "@/lib/api/media-job-dto";
 import {
   INITIAL_MEDIA_DOWNLOAD_UI_STATE,
-  canCancelJob,
-  canDownloadFile,
   canRetryJobSubmit,
   canSubmitJob,
   getSafeStatusMessage,
-  getVisibleProgress,
   isJobActive,
   isTerminalState,
   mediaDownloadUiReducer,
@@ -23,6 +20,7 @@ import {
 import {
   createMediaJobPollingController,
   type CancellationRequestState,
+  type MediaJobPollingPolicy,
   type MediaJobPollingController
 } from "@/lib/client/media-job-poller";
 import { API_ERROR_CODES, type ApiResponse, type ExtractRequest, type ExtractResponse, type VideoFormat, type VideoMetadata } from "@/lib/types";
@@ -54,14 +52,16 @@ function formatDuration(seconds?: number): string {
 }
 
 function formatQuality(format: VideoFormat): string {
-  const parts = [format.quality, format.ext.toUpperCase()].filter(Boolean);
-  return parts.length > 0 ? parts.join(" ") : format.label;
+  const quality = format.quality?.trim();
+  if (quality?.toLowerCase() === "source") return "Исходное качество";
+  return quality || format.label || "Доступное качество";
 }
 
 function formatMeta(format: VideoFormat): string {
-  const media = [format.hasVideo ? "видео" : null, format.hasAudio ? "аудио" : null].filter(Boolean).join(" + ");
-  const size = format.width && format.height ? `${format.width}x${format.height}` : null;
-  return [media || "медиа", size].filter(Boolean).join(" · ");
+  const resolution = format.width && format.height ? `${format.width} × ${format.height}` : null;
+  const container = format.ext ? `Контейнер: ${format.ext.toUpperCase()}` : null;
+  const audio = format.hasAudio === true ? "с аудио" : format.hasAudio === false ? "без аудио" : null;
+  return [resolution, container, audio].filter(Boolean).join(" · ") || "Параметры источника";
 }
 
 function mapMetadataToSelection(metadata: VideoMetadata): MediaSelectionData {
@@ -111,14 +111,14 @@ async function postJson<TResponse>(
   return readApiResponse<TResponse>(response);
 }
 
-function statusTone(state: MediaDownloadUiState): "neutral" | "loading" | "success" | "error" | "warning" {
+function statusTone(state: MediaDownloadUiState): "info" | "progress" | "success" | "error" | "warning" {
   switch (state.status) {
     case "extracting":
     case "submitting":
     case "queued":
     case "running":
     case "downloading":
-      return "loading";
+      return "progress";
     case "ready":
     case "success":
       return "success";
@@ -131,7 +131,7 @@ function statusTone(state: MediaDownloadUiState): "neutral" | "loading" | "succe
       return "warning";
     case "idle":
     case "selection-ready":
-      return "neutral";
+      return "info";
     default: {
       const exhaustive: never = state;
       throw new TypeError(`Unsupported UI state: ${String(exhaustive)}`);
@@ -150,11 +150,11 @@ function statusTitle(state: MediaDownloadUiState): string {
     case "ready": return "Файл готов";
     case "downloading": return "Скачивание";
     case "success": return "Скачивание началось";
-    case "failed": return "Не удалось выполнить операцию";
-    case "cancelled": return "Задача отменена";
-    case "expired": return "Файл недоступен";
-    case "network-error": return "Ошибка соединения";
-    case "polling-timeout": return "Долгая обработка";
+    case "failed": return "Не удалось подготовить файл";
+    case "cancelled": return "Подготовка файла отменена";
+    case "expired": return "Срок хранения файла истёк";
+    case "network-error": return "Не удалось получить статус задачи";
+    case "polling-timeout": return "Подготовка занимает больше времени, чем ожидалось";
     default: {
       const exhaustive: never = state;
       throw new TypeError(`Unsupported UI state: ${String(exhaustive)}`);
@@ -162,7 +162,11 @@ function statusTitle(state: MediaDownloadUiState): string {
   }
 }
 
-export function VideoDownloader() {
+export type VideoDownloaderProps = Readonly<{
+  pollingPolicy?: Partial<MediaJobPollingPolicy>;
+}>;
+
+export function VideoDownloader({ pollingPolicy }: VideoDownloaderProps = {}) {
   const [url, setUrl] = useState("");
   const [uiState, dispatch] = useReducer(mediaDownloadUiReducer, INITIAL_MEDIA_DOWNLOAD_UI_STATE);
   const [cancellationState, setCancellationState] = useState<CancellationRequestState>({
@@ -177,11 +181,7 @@ export function VideoDownloader() {
 
   const validationError = useMemo(() => validateUrl(url), [url]);
   const selection = "selection" in uiState ? uiState.selection : null;
-  const submitAllowed = canSubmitJob(uiState);
-  const submitRetryAllowed = canRetryJobSubmit(uiState);
-  const cancelAllowed = canCancelJob(uiState);
   const canCheckLink = uiState.status !== "extracting" && !isJobActive(uiState);
-  const visibleProgress = getVisibleProgress(uiState);
 
   function nextGeneration(): number {
     generationRef.current += 1;
@@ -193,7 +193,8 @@ export function VideoDownloader() {
       dispatch,
       getState: () => stateRef.current,
       fetch: (input, init) => globalThis.fetch(input, init),
-      onCancellationStateChange: setCancellationState
+      onCancellationStateChange: setCancellationState,
+      policy: pollingPolicy
     });
     pollingControllerRef.current = controller;
     return () => {
@@ -201,7 +202,7 @@ export function VideoDownloader() {
       controller.dispose();
       if (pollingControllerRef.current === controller) pollingControllerRef.current = null;
     };
-  }, []);
+  }, [pollingPolicy]);
 
   async function handleExtract(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -254,13 +255,13 @@ export function VideoDownloader() {
 
     const requestGeneration = nextGeneration();
     const currentSelection = uiState.selection;
-    if (!currentSelection) return;
+    if (!currentSelection || currentSelection.rightsConfirmed !== true) return;
 
     const requestBody: CreateDownloadJobRequest = {
       url: url.trim(),
       formatId: currentSelection.selectedFormatId,
       processingPreset: currentSelection.processingPreset,
-      rightsConfirmed: true
+      rightsConfirmed: currentSelection.rightsConfirmed
     };
     await pollingControllerRef.current?.submitJob(requestBody, requestGeneration);
   }
@@ -285,13 +286,6 @@ export function VideoDownloader() {
     dispatch({ type: "DOWNLOAD_STARTED", jobId });
     dispatch({ type: "DOWNLOAD_TRIGGERED", jobId });
   }
-
-  const stateMessage = cancellationState.pending
-    ? "Отменяем подготовку файла"
-    : getSafeStatusMessage(uiState);
-  const progressSuffix = visibleProgress !== null && (uiState.status === "queued" || uiState.status === "running")
-    ? ` Прогресс: ${Math.round(visibleProgress)}%.`
-    : "";
 
   return (
     <section id="check" className="bg-[#F7F9FF] px-5 py-12 sm:px-8 sm:py-16">
@@ -326,11 +320,12 @@ export function VideoDownloader() {
                   type="url"
                   inputMode="url"
                   value={url}
+                  disabled={isJobActive(uiState)}
                   onChange={(event) => handleUrlChange(event.target.value)}
                   placeholder="https://example.com/video"
                   aria-invalid={uiState.status === "failed" || uiState.status === "network-error"}
                   aria-describedby="video-url-status"
-                  className="h-12 w-full rounded-xl border border-slate-200 bg-white pl-12 pr-4 text-sm font-medium text-ink outline-none transition placeholder:text-slate-400 focus:border-brand focus:ring-4 focus:ring-blue-100"
+                  className="h-12 w-full rounded-xl border border-slate-200 bg-white pl-12 pr-4 text-sm font-medium text-ink outline-none transition placeholder:text-slate-400 focus:border-brand focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                 />
               </div>
               <button
@@ -345,92 +340,44 @@ export function VideoDownloader() {
 
             <div id="video-url-status">
               {uiState.status === "idle" && validationError && url.trim().length > 0 ? (
-                <StatusMessage tone="neutral" title="Проверьте формат" text={validationError} />
-              ) : uiState.status !== "idle" ? (
+                <StatusMessage tone="info" title="Проверьте формат" text={validationError} />
+              ) : !selection && uiState.status !== "idle" ? (
                 <StatusMessage
                   tone={statusTone(uiState)}
                   title={statusTitle(uiState)}
-                  text={`${stateMessage}${progressSuffix}`}
+                  text={getSafeStatusMessage(uiState)}
                 />
               ) : null}
             </div>
           </form>
 
-          {selection && (uiState.status === "selection-ready" || uiState.status === "submitting") && (
+          {selection && (
             <div className="mt-5">
               <VideoResultCard
-                result={selection.media}
-                selectedQuality={selection.selectedFormatId}
-                rightsConfirmed={selection.rightsConfirmed}
-                isSubmitting={uiState.status === "submitting"}
-                canSubmit={submitAllowed}
+                state={uiState}
+                cancellationPending={cancellationState.pending}
+                cancellationError={cancellationState.error}
                 onQualityChange={(formatId) => dispatch({ type: "SELECTION_UPDATED", formatId })}
+                onPresetChange={(processingPreset) => dispatch({ type: "SELECTION_UPDATED", processingPreset })}
                 onRightsChange={(rightsConfirmed) => dispatch({ type: "RIGHTS_UPDATED", rightsConfirmed })}
                 onSubmit={handleSubmitJob}
+                onCancel={() => void pollingControllerRef.current?.cancelActiveJob()}
+                onDownload={handleDownloadClick}
+                onStartNew={handleStartNewJob}
+                onRetryStatus={() => { pollingControllerRef.current?.resumePolling(); }}
+                onRetrySubmit={() => void handleSubmitJob()}
               />
             </div>
           )}
 
-          {uiState.status === "ready" && canDownloadFile(uiState) && (
-            <a
-              href={uiState.result.downloadUrl}
-              download={uiState.result.filename}
-              onClick={() => handleDownloadClick(uiState.jobId)}
-              className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-bold text-white transition hover:bg-[#254FDD]"
-            >
-              <Icon name="download" className="h-4 w-4" />
-              Скачать файл
-            </a>
-          )}
-
-          {cancelAllowed && (
-            <button
-              type="button"
-              disabled={cancellationState.pending}
-              onClick={() => void pollingControllerRef.current?.cancelActiveJob()}
-              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-5 text-sm font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <Icon name={cancellationState.pending ? "sparkle" : "x"} className="h-4 w-4" />
-              {cancellationState.pending ? "Отменяем" : "Отменить"}
-            </button>
-          )}
-
-          {cancellationState.error && cancelAllowed && (
-            <div className="mt-3">
-              <StatusMessage tone="error" title="Отмена не подтверждена" text={cancellationState.error} />
-            </div>
-          )}
-
-          {(uiState.status === "polling-timeout" || (uiState.status === "network-error" && uiState.jobId)) && (
-            <button
-              type="button"
-              onClick={() => pollingControllerRef.current?.resumePolling()}
-              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-5 text-sm font-bold text-brand transition hover:bg-blue-50"
-            >
-              <Icon name="arrow" className="h-4 w-4" />
-              Повторить проверку статуса
-            </button>
-          )}
-
-          {submitRetryAllowed && (
-            <button
-              type="button"
-              onClick={() => void handleSubmitJob()}
-              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-5 text-sm font-bold text-brand transition hover:bg-blue-50"
-            >
-              <Icon name="arrow" className="h-4 w-4" />
-              Повторить создание задачи
-            </button>
-          )}
-
-          {isTerminalState(uiState) && uiState.status !== "network-error" && (
+          {!selection && isTerminalState(uiState) && (
             <button
               type="button"
               onClick={handleStartNewJob}
-              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 text-sm font-bold text-ink transition hover:bg-slate-50"
+              className="mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-ink transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-blue-100"
             >
               <Icon name="arrow" className="h-4 w-4" />
-              Начать новую задачу
+              Начать заново
             </button>
           )}
         </div>

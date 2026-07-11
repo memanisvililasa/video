@@ -8,7 +8,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "vitest run",
+    "test": "npm run test:all",
+    "test:unit": "vitest run --project unit",
+    "test:browser": "vitest run --project browser",
+    "test:all": "npm run test:unit && npm run test:browser",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -20,11 +23,15 @@
     "@types/node": "^22.20.1",
     "@types/react": "19.0.2",
     "@types/react-dom": "19.0.2",
+    "@vitest/browser-playwright": "4.1.10",
     "autoprefixer": "10.4.20",
+    "playwright": "1.59.0",
     "postcss": "8.5.16",
     "tailwindcss": "3.4.16",
     "typescript": "5.7.2",
-    "vitest": "^4.1.10"
+    "vite": "8.1.4",
+    "vitest": "^4.1.10",
+    "vitest-browser-react": "2.2.0"
   },
   "overrides": {
     "postcss": "8.5.16"

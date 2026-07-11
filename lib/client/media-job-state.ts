@@ -2,9 +2,12 @@ import {
   isProcessingPreset,
   type CreateDownloadJobData,
   type MediaJobApiResult,
-  type MediaJobApiSnapshot,
-  type ProcessingPreset
+  type MediaJobApiSnapshot
 } from "@/lib/api/media-job-dto";
+import {
+  isUserProcessingPreset,
+  type UserProcessingPreset
+} from "@/lib/client/media-preset-options";
 import { API_ERROR_CODES, type ApiErrorCode } from "@/lib/types";
 
 const FORMAT_ID = /^[a-zA-Z0-9._-]{1,64}$/;
@@ -34,7 +37,7 @@ export type MediaSelectionData = Readonly<{
 export type MediaJobSelection = Readonly<{
   media: MediaSelectionData;
   selectedFormatId: string;
-  processingPreset: ProcessingPreset;
+  processingPreset: UserProcessingPreset;
   rightsConfirmed: boolean;
 }>;
 
@@ -48,7 +51,7 @@ type SelectionStateBase = StateBase & Readonly<{ selection: MediaJobSelection }>
 type JobStateBase = SelectionStateBase & Readonly<{
   jobId: string;
   progress: number;
-  processingPreset: ProcessingPreset;
+  processingPreset: UserProcessingPreset;
   createdAt: string;
   startedAt: string | null;
   expiresAt: string | null;
@@ -103,7 +106,7 @@ export type MediaDownloadUiEvent =
   | Readonly<{ type: "EXTRACT_STARTED"; requestGeneration: number }>
   | Readonly<{ type: "EXTRACT_SUCCEEDED"; requestGeneration: number; media: MediaSelectionData }>
   | Readonly<{ type: "EXTRACT_FAILED"; requestGeneration: number; error: SafeUiError }>
-  | Readonly<{ type: "SELECTION_UPDATED"; formatId?: string; processingPreset?: ProcessingPreset }>
+  | Readonly<{ type: "SELECTION_UPDATED"; formatId?: string; processingPreset?: UserProcessingPreset }>
   | Readonly<{ type: "RIGHTS_UPDATED"; rightsConfirmed: boolean }>
   | Readonly<{ type: "JOB_SUBMIT_STARTED"; requestGeneration: number }>
   | Readonly<{ type: "JOB_CREATED"; requestGeneration: number; data: CreateDownloadJobData }>
@@ -241,7 +244,7 @@ function isSafeJobId(value: unknown): value is string {
   return typeof value === "string" && value.length <= 128 && JOB_ID.test(value);
 }
 
-function freezeResult(value: unknown, expectedPreset: ProcessingPreset): MediaJobApiResult | null {
+function freezeResult(value: unknown, expectedPreset: UserProcessingPreset): MediaJobApiResult | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const result = value as Partial<MediaJobApiResult>;
   if (
@@ -326,7 +329,7 @@ function jobBase(
     !selection ||
     !isSafeJobId(snapshot.jobId) ||
     !createdAt ||
-    !isProcessingPreset(snapshot.processingPreset) ||
+    !isUserProcessingPreset(snapshot.processingPreset) ||
     snapshot.processingPreset !== selection.processingPreset
   ) {
     return null;
@@ -463,7 +466,7 @@ export function mediaDownloadUiReducer(
       const formatId = event.formatId ?? state.selection.selectedFormatId;
       const preset = event.processingPreset ?? state.selection.processingPreset;
       if (!FORMAT_ID.test(formatId) || !state.selection.media.qualities.some((item) => item.id === formatId)) return state;
-      if (!isProcessingPreset(preset)) return state;
+      if (!isUserProcessingPreset(preset)) return state;
       return Object.freeze({
         ...state,
         selection: freezeSelection({ ...state.selection, selectedFormatId: formatId, processingPreset: preset })
@@ -501,7 +504,7 @@ export function mediaDownloadUiReducer(
         event.data.status !== "queued" ||
         !isSafeJobId(event.data.jobId) ||
         !createdAt ||
-        !isProcessingPreset(event.data.processingPreset) ||
+        !isUserProcessingPreset(event.data.processingPreset) ||
         event.data.processingPreset !== state.selection.processingPreset
       ) {
         return protocolFailure(state, event.data.jobId);
@@ -622,7 +625,7 @@ export function canSubmitJob(state: MediaDownloadUiState): boolean {
     state.selection.rightsConfirmed === true &&
     FORMAT_ID.test(state.selection.selectedFormatId) &&
     state.selection.media.qualities.some((item) => item.id === state.selection.selectedFormatId) &&
-    isProcessingPreset(state.selection.processingPreset)
+    isUserProcessingPreset(state.selection.processingPreset)
   );
 }
 
@@ -635,7 +638,7 @@ export function canRetryJobSubmit(state: MediaDownloadUiState): boolean {
     state.selection.rightsConfirmed === true &&
     FORMAT_ID.test(state.selection.selectedFormatId) &&
     state.selection.media.qualities.some((item) => item.id === state.selection?.selectedFormatId) &&
-    isProcessingPreset(state.selection.processingPreset)
+    isUserProcessingPreset(state.selection.processingPreset)
   );
 }
 

@@ -7,6 +7,11 @@ import type {
 } from "@/lib/api/media-job-dto";
 import { PROCESSING_PRESETS } from "@/lib/api/media-job-dto";
 import {
+  USER_PROCESSING_PRESETS,
+  isUserProcessingPreset,
+  type UserProcessingPreset
+} from "@/lib/client/media-preset-options";
+import {
   INITIAL_MEDIA_DOWNLOAD_UI_STATE,
   canCancelJob,
   canDownloadFile,
@@ -121,20 +126,20 @@ function selectionReady(generation = 1): MediaDownloadUiState {
   });
 }
 
-function confirmedSelection(generation = 1, preset: ProcessingPreset = "original"): MediaDownloadUiState {
+function confirmedSelection(generation = 1, preset: UserProcessingPreset = "original"): MediaDownloadUiState {
   let state = selectionReady(generation);
   state = mediaDownloadUiReducer(state, { type: "SELECTION_UPDATED", processingPreset: preset });
   return mediaDownloadUiReducer(state, { type: "RIGHTS_UPDATED", rightsConfirmed: true });
 }
 
-function submitting(generation = 2, preset: ProcessingPreset = "original"): MediaDownloadUiState {
+function submitting(generation = 2, preset: UserProcessingPreset = "original"): MediaDownloadUiState {
   return mediaDownloadUiReducer(confirmedSelection(generation - 1, preset), {
     type: "JOB_SUBMIT_STARTED",
     requestGeneration: generation
   });
 }
 
-function queued(generation = 2, preset: ProcessingPreset = "original"): MediaDownloadUiState {
+function queued(generation = 2, preset: UserProcessingPreset = "original"): MediaDownloadUiState {
   return mediaDownloadUiReducer(submitting(generation, preset), {
     type: "JOB_CREATED",
     requestGeneration: generation,
@@ -310,6 +315,19 @@ describe("media download UI reducer transitions", () => {
       });
     }
   );
+
+  it("START_NEW_JOB removes the previous preset, rights confirmation and result", () => {
+    const completed = ready();
+    expect(completed).toMatchObject({
+      status: "ready",
+      selection: { processingPreset: "original", rightsConfirmed: true },
+      result: { filename: "public-video.mp4" }
+    });
+    const reset = mediaDownloadUiReducer(completed, { type: "START_NEW_JOB", requestGeneration: 3 });
+    expect(reset).toEqual({ status: "idle", requestGeneration: 3 });
+    expect(reset).not.toHaveProperty("selection");
+    expect(reset).not.toHaveProperty("result");
+  });
 });
 
 describe("forbidden transitions and stale response protection", () => {
@@ -358,6 +376,17 @@ describe("forbidden transitions and stale response protection", () => {
       type: "UNKNOWN_EVENT"
     })).toThrow(TypeError);
   });
+
+  it("rejects arbitrary and hidden preset strings at the reducer boundary", () => {
+    const state = selectionReady();
+    for (const processingPreset of ["enhance-4k", "remux-to-mp4"]) {
+      const next = mediaDownloadUiReducer(state, {
+        type: "SELECTION_UPDATED",
+        processingPreset
+      } as unknown as MediaDownloadUiEvent);
+      expect(next).toBe(state);
+    }
+  });
 });
 
 describe("snapshot mapping and sanitization", () => {
@@ -392,6 +421,25 @@ describe("snapshot mapping and sanitization", () => {
     expect(mapped).toMatchObject({
       status: "failed",
       error: { code: API_ERROR_CODES.INTERNAL_ERROR, message: "Не удалось обработать задачу." }
+    });
+  });
+
+  it("keeps AUDIO_STREAM_NOT_FOUND as a safe user-facing failure", () => {
+    const audioState = queued(2, "audio-only");
+    const failedSnapshot = {
+      ...snapshot("failed", { processingPreset: "audio-only" }),
+      error: {
+        code: API_ERROR_CODES.AUDIO_STREAM_NOT_FOUND,
+        message: "В медиафайле не найдена аудиодорожка."
+      }
+    } as MediaJobApiSnapshot;
+    const failed = mapApiSnapshotToUiState(audioState, failedSnapshot);
+    expect(failed).toMatchObject({
+      status: "failed",
+      error: {
+        code: API_ERROR_CODES.AUDIO_STREAM_NOT_FOUND,
+        message: "В медиафайле не найдена аудиодорожка."
+      }
     });
   });
 
@@ -487,8 +535,21 @@ describe("derived selectors", () => {
     expect(canSubmitJob(invalidPreset)).toBe(false);
   });
 
-  it.each(PROCESSING_PRESETS)("supports the canonical %s preset", (processingPreset) => {
+  it.each(USER_PROCESSING_PRESETS)("supports the user-facing %s preset", (processingPreset) => {
     expect(canSubmitJob(confirmedSelection(1, processingPreset))).toBe(true);
+  });
+
+  it("keeps remux-to-mp4 as an API preset while rejecting it from the main UI", () => {
+    expect(PROCESSING_PRESETS).toContain("remux-to-mp4");
+    expect(isUserProcessingPreset("remux-to-mp4")).toBe(false);
+    const injected = {
+      ...confirmedSelection(),
+      selection: {
+        ...(confirmedSelection() as Extract<MediaDownloadUiState, { status: "selection-ready" }>).selection,
+        processingPreset: "remux-to-mp4"
+      }
+    } as unknown as MediaDownloadUiState;
+    expect(canSubmitJob(injected)).toBe(false);
   });
 
   it("blocks repeated submit for submitting, queued and running", () => {
@@ -496,6 +557,19 @@ describe("derived selectors", () => {
       expect(canSubmitJob(state)).toBe(false);
       expect(isJobActive(state)).toBe(true);
     }
+  });
+
+  it.each(["submitting", "queued", "running"] as const)("blocks preset changes while %s", (status) => {
+    const state = status === "submitting" ? submitting() : status === "queued" ? queued() : running();
+    const next = mediaDownloadUiReducer(state, {
+      type: "SELECTION_UPDATED",
+      processingPreset: "audio-only"
+    });
+    expect(next).toBe(state);
+    if (next.status !== "submitting" && next.status !== "queued" && next.status !== "running") {
+      throw new Error("Expected an active job state.");
+    }
+    expect(next.selection.processingPreset).toBe("original");
   });
 
   it("allows cancellation only for queued and running", () => {
@@ -512,6 +586,12 @@ describe("derived selectors", () => {
       result: { ...result(), downloadUrl: "https://attacker.example/output" }
     } as MediaDownloadUiState;
     expect(canDownloadFile(unsafe)).toBe(false);
+
+    const missingCanonicalUrl = {
+      ...ready(),
+      result: { ...result(), downloadUrl: "" }
+    } as MediaDownloadUiState;
+    expect(canDownloadFile(missingCanonicalUrl)).toBe(false);
   });
 
   it("classifies terminal states and returns safe messages exhaustively", () => {
