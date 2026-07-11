@@ -17,6 +17,10 @@ function isLegacyErrorCode(code: AppErrorCode): code is LegacyApiErrorCode {
 }
 
 export const API_ERROR_MESSAGES: Record<ApiErrorCode, string> = {
+  INVALID_REQUEST: "Проверьте данные запроса и повторите попытку.",
+  RIGHTS_NOT_CONFIRMED: "Подтвердите права на загрузку этого контента.",
+  UNSUPPORTED_PRESET: "Выбранный режим обработки не поддерживается.",
+  INVALID_FORMAT: "Выбран некорректный формат медиа.",
   INVALID_URL: "Укажите корректную HTTP(S)-ссылку на видео.",
   UNSUPPORTED_URL: "Этот источник пока не поддерживается.",
   PRIVATE_OR_LOCAL_URL: "Локальные и внутренние адреса не поддерживаются.",
@@ -44,6 +48,10 @@ export const API_ERROR_MESSAGES: Record<ApiErrorCode, string> = {
 };
 
 export const API_ERROR_STATUS: Record<ApiErrorCode, number> = {
+  INVALID_REQUEST: 400,
+  RIGHTS_NOT_CONFIRMED: 403,
+  UNSUPPORTED_PRESET: 422,
+  INVALID_FORMAT: 422,
   INVALID_URL: 400,
   UNSUPPORTED_URL: 400,
   PRIVATE_OR_LOCAL_URL: 400,
