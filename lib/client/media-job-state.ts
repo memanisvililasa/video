@@ -116,6 +116,7 @@ export type MediaDownloadUiEvent =
       error?: SafeUiError;
     }>
   | Readonly<{ type: "POLLING_TIMED_OUT"; requestGeneration: number; jobId: string }>
+  | Readonly<{ type: "JOB_NOT_FOUND"; requestGeneration: number; jobId: string }>
   | Readonly<{ type: "JOB_CANCELLED"; requestGeneration: number; jobId: string }>
   | Readonly<{ type: "DOWNLOAD_STARTED"; jobId: string }>
   | Readonly<{ type: "DOWNLOAD_TRIGGERED"; jobId: string }>
@@ -330,11 +331,15 @@ function jobBase(
   ) {
     return null;
   }
+  const previousProgress =
+    stateJobId(state) === snapshot.jobId && "progress" in state
+      ? normalizeProgress(state.progress)
+      : 0;
   return Object.freeze({
     requestGeneration: state.requestGeneration,
     selection,
     jobId: snapshot.jobId,
-    progress: normalizeProgress(snapshot.progress),
+    progress: Math.max(previousProgress, normalizeProgress(snapshot.progress)),
     processingPreset: snapshot.processingPreset,
     createdAt,
     startedAt: normalizeIso(snapshot.startedAt),
@@ -346,7 +351,13 @@ export function mapApiSnapshotToUiState(
   state: MediaDownloadUiState,
   snapshot: MediaJobApiSnapshot
 ): MediaDownloadUiState {
-  if (!isJobActive(state) && state.status !== "polling-timeout") return state;
+  if (
+    !isJobActive(state) &&
+    state.status !== "polling-timeout" &&
+    !(state.status === "network-error" && state.jobId)
+  ) {
+    return state;
+  }
   if (typeof snapshot !== "object" || snapshot === null || Array.isArray(snapshot)) {
     return protocolFailure(state, stateJobId(state));
   }
@@ -465,17 +476,21 @@ export function mediaDownloadUiReducer(
             selection: freezeSelection({ ...state.selection, rightsConfirmed: event.rightsConfirmed === true })
           })
         : state;
-    case "JOB_SUBMIT_STARTED":
-      return state.status === "selection-ready" &&
-        canSubmitJob(state) &&
+    case "JOB_SUBMIT_STARTED": {
+      const selection = stateSelection(state);
+      const submitAllowed =
+        (state.status === "selection-ready" && canSubmitJob(state)) || canRetryJobSubmit(state);
+      return submitAllowed &&
+        selection &&
         isValidGeneration(event.requestGeneration) &&
         event.requestGeneration > state.requestGeneration
         ? Object.freeze({
             status: "submitting",
             requestGeneration: event.requestGeneration,
-            selection: state.selection
+            selection
           })
         : state;
+    }
     case "JOB_CREATED": {
       if (state.status !== "submitting" || !generationMatches(state, event.requestGeneration)) return state;
       if (typeof event.data !== "object" || event.data === null || Array.isArray(event.data)) {
@@ -555,6 +570,21 @@ export function mediaDownloadUiReducer(
             message: "Подготовка занимает больше времени, чем ожидалось"
           })
         : state;
+    case "JOB_NOT_FOUND":
+      return generationMatches(state, event.requestGeneration) &&
+        stateJobId(state) === event.jobId &&
+        (state.status === "queued" ||
+          state.status === "running" ||
+          state.status === "polling-timeout" ||
+          state.status === "network-error")
+        ? Object.freeze({
+            status: "expired",
+            requestGeneration: state.requestGeneration,
+            ...(stateSelection(state) ? { selection: stateSelection(state) } : {}),
+            jobId: event.jobId,
+            message: "Задача не найдена или срок хранения файла истёк"
+          })
+        : state;
     case "JOB_CANCELLED":
       return generationMatches(state, event.requestGeneration) &&
         (state.status === "queued" || state.status === "running") &&
@@ -592,6 +622,19 @@ export function canSubmitJob(state: MediaDownloadUiState): boolean {
     state.selection.rightsConfirmed === true &&
     FORMAT_ID.test(state.selection.selectedFormatId) &&
     state.selection.media.qualities.some((item) => item.id === state.selection.selectedFormatId) &&
+    isProcessingPreset(state.selection.processingPreset)
+  );
+}
+
+export function canRetryJobSubmit(state: MediaDownloadUiState): boolean {
+  return (
+    state.status === "network-error" &&
+    state.operation === "submit" &&
+    !state.jobId &&
+    state.selection !== undefined &&
+    state.selection.rightsConfirmed === true &&
+    FORMAT_ID.test(state.selection.selectedFormatId) &&
+    state.selection.media.qualities.some((item) => item.id === state.selection?.selectedFormatId) &&
     isProcessingPreset(state.selection.processingPreset)
   );
 }
@@ -639,11 +682,13 @@ export function getSafeStatusMessage(state: MediaDownloadUiState): string {
     case "failed":
       return safeMessage(state.error.message, "Не удалось обработать задачу.");
     case "cancelled":
-      return "Подготовка файла отменена";
+      return safeMessage(state.message, "Подготовка файла отменена");
     case "expired":
-      return "Срок хранения файла истёк";
+      return safeMessage(state.message, "Срок хранения файла истёк");
     case "network-error":
-      return NETWORK_ERROR_MESSAGE;
+      return state.operation === "poll"
+        ? "Не удалось получить статус задачи"
+        : NETWORK_ERROR_MESSAGE;
     case "polling-timeout":
       return "Подготовка занимает больше времени, чем ожидалось";
     default: {

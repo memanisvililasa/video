@@ -4,19 +4,27 @@ import { FormEvent, useEffect, useMemo, useReducer, useRef, useState } from "rea
 import { Icon } from "@/components/icons";
 import { StatusMessage } from "@/components/status-message";
 import { VideoResultCard } from "@/components/video-result-card";
-import type { CreateDownloadJobData, CreateDownloadJobRequest } from "@/lib/api/media-job-dto";
+import type { CreateDownloadJobRequest } from "@/lib/api/media-job-dto";
 import {
   INITIAL_MEDIA_DOWNLOAD_UI_STATE,
+  canCancelJob,
   canDownloadFile,
+  canRetryJobSubmit,
   canSubmitJob,
   getSafeStatusMessage,
   getVisibleProgress,
   isJobActive,
+  isTerminalState,
   mediaDownloadUiReducer,
   type MediaDownloadUiState,
   type MediaSelectionData,
   type SafeUiError
 } from "@/lib/client/media-job-state";
+import {
+  createMediaJobPollingController,
+  type CancellationRequestState,
+  type MediaJobPollingController
+} from "@/lib/client/media-job-poller";
 import { API_ERROR_CODES, type ApiResponse, type ExtractRequest, type ExtractResponse, type VideoFormat, type VideoMetadata } from "@/lib/types";
 
 function validateUrl(value: string): string | null {
@@ -89,7 +97,7 @@ function isAbortError(error: unknown): boolean {
 
 async function postJson<TResponse>(
   path: string,
-  body: ExtractRequest | CreateDownloadJobRequest,
+  body: ExtractRequest,
   signal?: AbortSignal
 ): Promise<ApiResponse<TResponse>> {
   const response = await fetch(path, {
@@ -157,13 +165,21 @@ function statusTitle(state: MediaDownloadUiState): string {
 export function VideoDownloader() {
   const [url, setUrl] = useState("");
   const [uiState, dispatch] = useReducer(mediaDownloadUiReducer, INITIAL_MEDIA_DOWNLOAD_UI_STATE);
+  const [cancellationState, setCancellationState] = useState<CancellationRequestState>({
+    pending: false,
+    error: null
+  });
   const extractAbortRef = useRef<AbortController | null>(null);
-  const submitAbortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
+  const stateRef = useRef(uiState);
+  const pollingControllerRef = useRef<MediaJobPollingController | null>(null);
+  stateRef.current = uiState;
 
   const validationError = useMemo(() => validateUrl(url), [url]);
   const selection = "selection" in uiState ? uiState.selection : null;
   const submitAllowed = canSubmitJob(uiState);
+  const submitRetryAllowed = canRetryJobSubmit(uiState);
+  const cancelAllowed = canCancelJob(uiState);
   const canCheckLink = uiState.status !== "extracting" && !isJobActive(uiState);
   const visibleProgress = getVisibleProgress(uiState);
 
@@ -173,9 +189,17 @@ export function VideoDownloader() {
   }
 
   useEffect(() => {
+    const controller = createMediaJobPollingController({
+      dispatch,
+      getState: () => stateRef.current,
+      fetch: (input, init) => globalThis.fetch(input, init),
+      onCancellationStateChange: setCancellationState
+    });
+    pollingControllerRef.current = controller;
     return () => {
       extractAbortRef.current?.abort();
-      submitAbortRef.current?.abort();
+      controller.dispose();
+      if (pollingControllerRef.current === controller) pollingControllerRef.current = null;
     };
   }, []);
 
@@ -184,7 +208,7 @@ export function VideoDownloader() {
     if (!canCheckLink) return;
 
     extractAbortRef.current?.abort();
-    submitAbortRef.current?.abort();
+    pollingControllerRef.current?.stop();
     const requestGeneration = nextGeneration();
     dispatch({ type: "EXTRACT_STARTED", requestGeneration });
 
@@ -226,12 +250,11 @@ export function VideoDownloader() {
   }
 
   async function handleSubmitJob() {
-    if (!canSubmitJob(uiState) || uiState.status !== "selection-ready") return;
+    if ((!canSubmitJob(uiState) && !canRetryJobSubmit(uiState)) || !("selection" in uiState)) return;
 
-    submitAbortRef.current?.abort();
     const requestGeneration = nextGeneration();
     const currentSelection = uiState.selection;
-    dispatch({ type: "JOB_SUBMIT_STARTED", requestGeneration });
+    if (!currentSelection) return;
 
     const requestBody: CreateDownloadJobRequest = {
       url: url.trim(),
@@ -239,49 +262,33 @@ export function VideoDownloader() {
       processingPreset: currentSelection.processingPreset,
       rightsConfirmed: true
     };
-    const controller = new AbortController();
-    submitAbortRef.current = controller;
-
-    try {
-      const apiResponse = await postJson<CreateDownloadJobData>("/api/download", requestBody, controller.signal);
-      if (submitAbortRef.current !== controller) return;
-
-      if (!apiResponse.ok) {
-        dispatch({
-          type: "JOB_REQUEST_FAILED",
-          requestGeneration,
-          operation: "submit",
-          network: false,
-          error: { code: apiResponse.error.code, message: apiResponse.error.message }
-        });
-        return;
-      }
-
-      dispatch({ type: "JOB_CREATED", requestGeneration, data: apiResponse.data });
-      // GET polling and DELETE cancellation are intentionally connected in 5.8.5.
-    } catch (requestError) {
-      if (isAbortError(requestError)) return;
-      dispatch({
-        type: "JOB_REQUEST_FAILED",
-        requestGeneration,
-        operation: "submit",
-        network: true
-      });
-    } finally {
-      if (submitAbortRef.current === controller) submitAbortRef.current = null;
-    }
+    await pollingControllerRef.current?.submitJob(requestBody, requestGeneration);
   }
 
   function handleUrlChange(value: string) {
     extractAbortRef.current?.abort();
     extractAbortRef.current = null;
-    submitAbortRef.current?.abort();
-    submitAbortRef.current = null;
+    pollingControllerRef.current?.stop();
     setUrl(value);
     dispatch({ type: "RESET", requestGeneration: nextGeneration() });
   }
 
-  const stateMessage = getSafeStatusMessage(uiState);
+  function handleStartNewJob() {
+    extractAbortRef.current?.abort();
+    extractAbortRef.current = null;
+    pollingControllerRef.current?.stop();
+    setCancellationState({ pending: false, error: null });
+    dispatch({ type: "START_NEW_JOB", requestGeneration: nextGeneration() });
+  }
+
+  function handleDownloadClick(jobId: string) {
+    dispatch({ type: "DOWNLOAD_STARTED", jobId });
+    dispatch({ type: "DOWNLOAD_TRIGGERED", jobId });
+  }
+
+  const stateMessage = cancellationState.pending
+    ? "Отменяем подготовку файла"
+    : getSafeStatusMessage(uiState);
   const progressSuffix = visibleProgress !== null && (uiState.status === "queued" || uiState.status === "running")
     ? ` Прогресс: ${Math.round(visibleProgress)}%.`
     : "";
@@ -368,12 +375,63 @@ export function VideoDownloader() {
             <a
               href={uiState.result.downloadUrl}
               download={uiState.result.filename}
-              onClick={() => dispatch({ type: "DOWNLOAD_STARTED", jobId: uiState.jobId })}
+              onClick={() => handleDownloadClick(uiState.jobId)}
               className="mt-5 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand px-5 text-sm font-bold text-white transition hover:bg-[#254FDD]"
             >
               <Icon name="download" className="h-4 w-4" />
               Скачать файл
             </a>
+          )}
+
+          {cancelAllowed && (
+            <button
+              type="button"
+              disabled={cancellationState.pending}
+              onClick={() => void pollingControllerRef.current?.cancelActiveJob()}
+              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-5 text-sm font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Icon name={cancellationState.pending ? "sparkle" : "x"} className="h-4 w-4" />
+              {cancellationState.pending ? "Отменяем" : "Отменить"}
+            </button>
+          )}
+
+          {cancellationState.error && cancelAllowed && (
+            <div className="mt-3">
+              <StatusMessage tone="error" title="Отмена не подтверждена" text={cancellationState.error} />
+            </div>
+          )}
+
+          {(uiState.status === "polling-timeout" || (uiState.status === "network-error" && uiState.jobId)) && (
+            <button
+              type="button"
+              onClick={() => pollingControllerRef.current?.resumePolling()}
+              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-5 text-sm font-bold text-brand transition hover:bg-blue-50"
+            >
+              <Icon name="arrow" className="h-4 w-4" />
+              Повторить проверку статуса
+            </button>
+          )}
+
+          {submitRetryAllowed && (
+            <button
+              type="button"
+              onClick={() => void handleSubmitJob()}
+              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-5 text-sm font-bold text-brand transition hover:bg-blue-50"
+            >
+              <Icon name="arrow" className="h-4 w-4" />
+              Повторить создание задачи
+            </button>
+          )}
+
+          {isTerminalState(uiState) && uiState.status !== "network-error" && (
+            <button
+              type="button"
+              onClick={handleStartNewJob}
+              className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-5 text-sm font-bold text-ink transition hover:bg-slate-50"
+            >
+              <Icon name="arrow" className="h-4 w-4" />
+              Начать новую задачу
+            </button>
           )}
         </div>
       </div>
