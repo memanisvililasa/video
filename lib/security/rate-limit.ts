@@ -2,7 +2,7 @@ import { createApiError } from "@/lib/errors";
 import { env } from "@/lib/config/env";
 import { API_ERROR_CODES, type ApiError } from "@/lib/types";
 
-export type RateLimitBucket = "extract" | "download" | "file" | "default";
+export type RateLimitBucket = "extract" | "download" | "job-status" | "job-cancel" | "file" | "default";
 export type RateLimitScope = RateLimitBucket;
 
 export type RateLimitConfig = {
@@ -69,11 +69,15 @@ export function getClientIpFromHeaders(headers: Headers): string {
 export function getRateLimitConfig(bucket: RateLimitBucket = "default"): RateLimitConfig {
   const globalMaxRequests = env.rateLimitMaxRequests;
   const downloadMaxRequests = globalMaxRequests === 0 ? 0 : Math.min(globalMaxRequests, 10);
+  const jobStatusMaxRequests = globalMaxRequests === 0 ? 0 : Math.max(globalMaxRequests, 120);
+  const jobCancelMaxRequests = globalMaxRequests === 0 ? 0 : Math.min(globalMaxRequests, 20);
   const fileMaxRequests = globalMaxRequests === 0 ? 0 : Math.max(globalMaxRequests, 120);
 
   const bucketDefaults: Record<RateLimitBucket, { maxRequests: number }> = {
     extract: { maxRequests: globalMaxRequests },
     download: { maxRequests: downloadMaxRequests },
+    "job-status": { maxRequests: jobStatusMaxRequests },
+    "job-cancel": { maxRequests: jobCancelMaxRequests },
     file: { maxRequests: fileMaxRequests },
     default: { maxRequests: globalMaxRequests }
   };
