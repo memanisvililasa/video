@@ -1,4 +1,5 @@
 import { createApiError } from "@/lib/errors";
+import { resolveRateLimitClientIdentifier } from "@/lib/security/client-identifier";
 import { API_ERROR_CODES, type ApiError } from "@/lib/types";
 
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/;
@@ -92,8 +93,5 @@ export function sanitizeTitle(value: unknown, options: SanitizeStringOptions = {
 }
 
 export function getClientIdentifier(headers: Headers): string {
-  const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const candidate = forwarded || headers.get("x-real-ip") || "anonymous";
-  const result = sanitizeClientIdentifier(candidate);
-  return result.ok ? result.value : "anonymous";
+  return resolveRateLimitClientIdentifier(headers);
 }

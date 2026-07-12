@@ -5,6 +5,7 @@ export {
   createRateLimitKey,
   getClientIpFromHeaders,
   getRateLimitConfig,
+  resolveRateLimitClientIdentifier,
   resetInMemoryRateLimits,
   resetRateLimitStoreForTests
 } from "@/lib/security/rate-limit";

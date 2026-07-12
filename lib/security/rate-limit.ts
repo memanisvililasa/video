@@ -1,5 +1,9 @@
 import { createApiError } from "@/lib/errors";
-import { env } from "@/lib/config/env";
+import { env, RATE_LIMIT_CONFIG_LIMITS } from "@/lib/config/env";
+import {
+  resolveRateLimitClientIdentifier,
+  UNIDENTIFIED_RATE_LIMIT_CLIENT
+} from "@/lib/security/client-identifier";
 import { API_ERROR_CODES, type ApiError } from "@/lib/types";
 
 export type RateLimitBucket = "extract" | "download" | "job-status" | "job-cancel" | "file" | "default";
@@ -14,11 +18,14 @@ export type RateLimitConfig = {
 
 export type RateLimitPolicy = RateLimitConfig;
 
-export type RateLimitKeyInput = {
+type RateLimitKeyBase = {
   bucket?: RateLimitBucket;
-  identifier?: string;
-  headers?: Headers;
 };
+
+export type RateLimitKeyInput =
+  | (RateLimitKeyBase & { headers: Headers; identifier?: never })
+  | (RateLimitKeyBase & { identifier: string; headers?: never })
+  | (RateLimitKeyBase & { headers?: undefined; identifier?: undefined });
 
 type RateLimitEntry = {
   count: number;
@@ -54,24 +61,27 @@ export type RateLimitResult = RateLimitAllowed | RateLimitRejected;
 
 const store = new Map<string, RateLimitEntry>();
 const DEFAULT_MAX_TRACKED_KEYS = 10_000;
+const MAX_TRACKED_KEYS_LIMIT = 100_000;
+const TRUSTED_IDENTIFIER = /^[a-zA-Z0-9:._,-]{1,128}$/;
 
-function sanitizeIdentifier(value: string): string {
-  return value.slice(0, 128).replace(/[^a-zA-Z0-9:._,-]/g, "");
+function normalizeTrustedIdentifier(value: string): string {
+  if (!TRUSTED_IDENTIFIER.test(value)) {
+    throw new TypeError("Trusted rate-limit identifier is invalid.");
+  }
+  return value;
 }
 
+/** @deprecated Forwarding headers are untrusted; use resolveRateLimitClientIdentifier. */
 export function getClientIpFromHeaders(headers: Headers): string {
-  const forwardedFor = headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  const realIp = headers.get("x-real-ip")?.trim();
-  const cfConnectingIp = headers.get("cf-connecting-ip")?.trim();
-  return sanitizeIdentifier(forwardedFor || realIp || cfConnectingIp || "anonymous") || "anonymous";
+  return resolveRateLimitClientIdentifier(headers);
 }
 
 export function getRateLimitConfig(bucket: RateLimitBucket = "default"): RateLimitConfig {
   const globalMaxRequests = env.rateLimitMaxRequests;
-  const downloadMaxRequests = globalMaxRequests === 0 ? 0 : Math.min(globalMaxRequests, 10);
-  const jobStatusMaxRequests = globalMaxRequests === 0 ? 0 : Math.max(globalMaxRequests, 120);
-  const jobCancelMaxRequests = globalMaxRequests === 0 ? 0 : Math.min(globalMaxRequests, 20);
-  const fileMaxRequests = globalMaxRequests === 0 ? 0 : Math.max(globalMaxRequests, 120);
+  const downloadMaxRequests = Math.min(globalMaxRequests, 10);
+  const jobStatusMaxRequests = Math.max(globalMaxRequests, 120);
+  const jobCancelMaxRequests = Math.min(globalMaxRequests, 20);
+  const fileMaxRequests = Math.max(globalMaxRequests, 120);
 
   const bucketDefaults: Record<RateLimitBucket, { maxRequests: number }> = {
     extract: { maxRequests: globalMaxRequests },
@@ -92,8 +102,36 @@ export function getRateLimitConfig(bucket: RateLimitBucket = "default"): RateLim
 
 export function createRateLimitKey(input: RateLimitKeyInput): string {
   const bucket = input.bucket ?? "default";
-  const identifier = input.identifier ?? (input.headers ? getClientIpFromHeaders(input.headers) : "anonymous");
-  return `${bucket}:${sanitizeIdentifier(identifier) || "anonymous"}`;
+  const identifier = input.identifier !== undefined
+    ? normalizeTrustedIdentifier(input.identifier)
+    : input.headers
+      ? resolveRateLimitClientIdentifier(input.headers)
+      : UNIDENTIFIED_RATE_LIMIT_CLIENT;
+  return `${bucket}:${identifier}`;
+}
+
+function assertValidEffectiveConfig(config: RateLimitConfig): void {
+  if (
+    !Number.isSafeInteger(config.windowSeconds) ||
+    config.windowSeconds < 1 ||
+    config.windowSeconds > RATE_LIMIT_CONFIG_LIMITS.maxWindowSeconds
+  ) {
+    throw new TypeError("Rate-limit windowSeconds is invalid.");
+  }
+  if (
+    !Number.isSafeInteger(config.maxRequests) ||
+    config.maxRequests < 1 ||
+    config.maxRequests > RATE_LIMIT_CONFIG_LIMITS.maxRequests
+  ) {
+    throw new TypeError("Rate-limit maxRequests is invalid.");
+  }
+  if (
+    !Number.isSafeInteger(config.maxTrackedKeys) ||
+    config.maxTrackedKeys < 1 ||
+    config.maxTrackedKeys > MAX_TRACKED_KEYS_LIMIT
+  ) {
+    throw new TypeError("Rate-limit maxTrackedKeys is invalid.");
+  }
 }
 
 function evictExpiredEntries(now: number) {
@@ -128,22 +166,14 @@ export function checkRateLimit(input: RateLimitKeyInput, overrideConfig: Partial
   const bucket = input.bucket ?? "default";
   const baseConfig = getRateLimitConfig(bucket);
   const config: RateLimitConfig = { ...baseConfig, ...overrideConfig, bucket };
-  const key = createRateLimitKey({ ...input, bucket });
+  assertValidEffectiveConfig(config);
+  const key = input.identifier !== undefined
+    ? createRateLimitKey({ bucket, identifier: input.identifier })
+    : input.headers
+      ? createRateLimitKey({ bucket, headers: input.headers })
+      : createRateLimitKey({ bucket });
   const now = Date.now();
-  const windowMs = Math.max(1, config.windowSeconds) * 1000;
-
-  if (config.maxRequests === 0) {
-    return {
-      ok: true,
-      allowed: true,
-      bucket,
-      key,
-      limit: 0,
-      remaining: Number.MAX_SAFE_INTEGER,
-      resetAt: now + windowMs,
-      retryAfterSeconds: 0
-    };
-  }
+  const windowMs = config.windowSeconds * 1000;
 
   if (store.size >= config.maxTrackedKeys) evictExpiredEntries(now);
 
@@ -203,3 +233,5 @@ export function consumeRateLimit(key: string): { allowed: boolean; retryAfterSec
 }
 
 export const resetInMemoryRateLimits = resetRateLimitStoreForTests;
+
+export { resolveRateLimitClientIdentifier } from "@/lib/security/client-identifier";

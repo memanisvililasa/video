@@ -35,3 +35,11 @@ npm run build
 ## ENV
 
 Список базовых переменных находится в `.env.example`.
+
+### Rate limiting и reverse proxy
+
+`TRUST_PROXY_MODE=none` — единственная поддерживаемая политика. Приложение не доверяет `Forwarded`, `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`, `X-Client-IP` и другим клиентским IP-заголовкам, потому что текущий Next.js Route Handler не предоставляет адрес непосредственного сетевого peer.
+
+Все неопознанные HTTP-клиенты используют один стабильный identifier внутри каждого rate-limit bucket. Это исключает обход лимитов подделкой заголовков, но означает, что один активный клиент может исчерпать общую квоту bucket для остальных. Перед публичным multi-user deployment нужен отдельный проверенный ingress/provider adapter с недоступным напрямую origin и надёжным peer identity.
+
+`RATE_LIMIT_MAX_REQUESTS` должен быть целым числом от 1 до 10000. Значение `0` не отключает rate limiting и считается ошибкой конфигурации.
