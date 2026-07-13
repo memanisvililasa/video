@@ -14,7 +14,7 @@ export type MediaJobRouteContext = Readonly<{
 }>;
 
 export type MediaJobRouteDependencies = Readonly<{
-  getDownloadJob: (jobId: string) => MediaJobSnapshot;
+  getDownloadJob: (jobId: string) => MediaJobSnapshot | Promise<MediaJobSnapshot>;
   cancelDownloadJob: (jobId: string) => Promise<MediaJobSnapshot>;
   serializeMediaJobSnapshot: (snapshot: MediaJobSnapshot) => MediaJobApiSnapshot;
   checkRateLimit: (input: RateLimitKeyInput) => RateLimitResult;
@@ -74,7 +74,7 @@ export function createMediaJobRouteHandlers(dependencies: MediaJobRouteDependenc
       if (!rateLimit.ok) return rateLimitResponse(rateLimit);
 
       const jobId = await getJobId(context);
-      const snapshot = dependencies.getDownloadJob(jobId);
+      const snapshot = await dependencies.getDownloadJob(jobId);
       assertJobIsAvailable(snapshot, now());
       return successResponse(dependencies.serializeMediaJobSnapshot(snapshot));
     } catch (error) {

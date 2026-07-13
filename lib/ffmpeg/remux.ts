@@ -5,7 +5,7 @@ import {
   MediaProcessError,
   runMediaProcess
 } from "@/lib/ffmpeg/process-runner";
-import { prepareLocalMp4Output, type LocalMediaOutput } from "@/lib/ffmpeg/local-output";
+import { prepareLocalMp4Output, type LocalMediaOutput, type LocalMediaOutputDirectoryPolicy } from "@/lib/ffmpeg/local-output";
 import {
   probeMediaFile,
   resolveLocalMediaFile,
@@ -35,6 +35,7 @@ export type MediaRemuxDependencies = {
   getAllowedRoot: () => string;
   timeoutMs: number;
   maxOutputBytes: number;
+  outputDirectoryPolicy?: LocalMediaOutputDirectoryPolicy;
 };
 
 function processingFailedError(): AppError {
@@ -180,7 +181,8 @@ export function createMediaRemux(dependencies: MediaRemuxDependencies) {
       output = await prepareLocalMp4Output(
         options.outputPath,
         inputFile.realPath,
-        dependencies.getAllowedRoot
+        dependencies.getAllowedRoot,
+        dependencies.outputDirectoryPolicy
       );
 
       const inputMetadata = await dependencies.probeMedia(inputFile.realPath, { signal: options.signal });

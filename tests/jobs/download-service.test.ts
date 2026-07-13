@@ -76,7 +76,7 @@ type FakeArtifactState = {
 };
 
 type HarnessOverrides = Partial<DownloadOrchestrationDependencies> & {
-  queue?: MediaJobQueue;
+  jobs?: MediaJobQueue;
   storedFilename?: string;
 };
 
@@ -126,7 +126,7 @@ function processorResult<T extends "remux" | "convert" | "audio">(
 
 function createHarness(overrides: HarnessOverrides = {}) {
   let nextJobId = 1;
-  const baseQueue = overrides.queue ?? createMediaJobQueue({
+  const baseJobs = overrides.jobs ?? createMediaJobQueue({
     maxConcurrentJobs: 1,
     maxQueuedJobs: 10,
     terminalTtlMs: 60_000,
@@ -134,14 +134,19 @@ function createHarness(overrides: HarnessOverrides = {}) {
     createJobId: () => `job_${nextJobId++}`
   });
   const appliedProgress: number[] = [];
-  const queue: MediaJobQueue = {
-    ...baseQueue,
+  const jobs: MediaJobQueue = {
+    ...baseJobs,
     enqueue(options) {
-      return baseQueue.enqueue({
+      let lastProgress = 0;
+      return baseJobs.enqueue({
         ...options,
         handler: (context, signal, updateProgress) => options.handler(context, signal, (value) => {
           updateProgress(value);
-          appliedProgress.push(baseQueue.getJob(context.jobId).progress);
+          if (!Number.isFinite(value)) return;
+          const normalized = Math.min(100, Math.max(0, value));
+          if (normalized < lastProgress) return;
+          lastProgress = normalized;
+          appliedProgress.push(normalized);
         })
       });
     }
@@ -252,12 +257,12 @@ function createHarness(overrides: HarnessOverrides = {}) {
     metadataTimeoutSeconds: 10,
     downloadTimeoutSeconds: 120,
     ...overrides,
-    queue
+    jobs
   };
   const service = createDownloadOrchestrationService(dependencies);
   return {
     service,
-    queue,
+    queue: jobs,
     extractor,
     extract,
     download,
@@ -274,7 +279,7 @@ function createHarness(overrides: HarnessOverrides = {}) {
 async function settleJob(queue: MediaJobQueue, jobId: string, rounds = 30) {
   for (let index = 0; index < rounds; index += 1) {
     await Promise.resolve();
-    const snapshot = queue.getJob(jobId);
+    const snapshot = await queue.getJob(jobId);
     if (snapshot.status !== "queued" && snapshot.status !== "running") return snapshot;
   }
   return queue.getJob(jobId);
@@ -298,7 +303,7 @@ describe("download orchestration service", () => {
     ["audio-only", "audio"]
   ] as const)("completes the %s preset", async (preset, processor) => {
     const harness = createHarness();
-    const enqueued = harness.service.enqueueDownloadJob(request(preset));
+    const enqueued = await harness.service.enqueueDownloadJob(request(preset));
     const snapshot = await settleJob(harness.queue, enqueued.jobId);
 
     expect(snapshot).toMatchObject({
@@ -321,11 +326,20 @@ describe("download orchestration service", () => {
     expect(harness.convertMedia).toHaveBeenCalledTimes(processor === "convert" ? 1 : 0);
     expect(harness.extractAudio).toHaveBeenCalledTimes(processor === "audio" ? 1 : 0);
     expect(harness.artifactStates[0].publishedOriginal).toBe(processor === "original");
+    expect(await harness.queue.jobRepository.get(enqueued.jobId)).toMatchObject({
+      sourceMetadata: {
+        sourceId: `source_${enqueued.jobId}`,
+        filename: "Public video.mp4",
+        sizeBytes: 6,
+        contentType: "video/mp4"
+      },
+      finalMetadata: { fileId: `file_${enqueued.jobId}` }
+    });
   });
 
   it("does not call any FFmpeg processor for original", async () => {
     const harness = createHarness();
-    const job = harness.service.enqueueDownloadJob(request("original"));
+    const job = await harness.service.enqueueDownloadJob(request("original"));
     await settleJob(harness.queue, job.jobId);
     expect(harness.remuxMedia).not.toHaveBeenCalled();
     expect(harness.convertMedia).not.toHaveBeenCalled();
@@ -333,7 +347,7 @@ describe("download orchestration service", () => {
     expect(harness.probeMedia).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects unsupported preset, missing rights and malformed formatId before enqueue", () => {
+  it("rejects unsupported preset, missing rights and malformed formatId before enqueue", async () => {
     const harness = createHarness();
     expect(syncError(() => harness.service.enqueueDownloadJob({
       ...request(),
@@ -347,7 +361,7 @@ describe("download orchestration service", () => {
       ...request(),
       formatId: "../../private"
     })).code).toBe(API_ERROR_CODES.INVALID_URL);
-    expect(harness.queue.getStats().totalJobs).toBe(0);
+    expect((await harness.queue.getStats()).totalJobs).toBe(0);
   });
 
   it("fails safely when formatId is absent from fresh server metadata", async () => {
@@ -359,7 +373,7 @@ describe("download orchestration service", () => {
       platform: "direct-media",
       formats: [{ id: "changed-format", label: "Changed", ext: "mp4" }]
     });
-    const job = harness.service.enqueueDownloadJob(request());
+    const job = await harness.service.enqueueDownloadJob(request());
     const snapshot = await settleJob(harness.queue, job.jobId);
     expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.UNSUPPORTED_URL } });
     expect(harness.download).not.toHaveBeenCalled();
@@ -377,7 +391,7 @@ describe("download orchestration service", () => {
     if (stage === "download" || stage === "too-large") harness.download.mockRejectedValueOnce(new AppError(code));
     if (stage === "probe") harness.probeMedia.mockRejectedValueOnce(new AppError(code));
     if (stage === "processor") harness.convertMedia.mockRejectedValueOnce(new AppError(code));
-    const job = harness.service.enqueueDownloadJob(request(stage === "processor" ? "compatible-mp4" : "original"));
+    const job = await harness.service.enqueueDownloadJob(request(stage === "processor" ? "compatible-mp4" : "original"));
     const snapshot = await settleJob(harness.queue, job.jobId);
 
     expect(snapshot).toMatchObject({ status: "failed", error: { code } });
@@ -387,7 +401,7 @@ describe("download orchestration service", () => {
   it("enforces media limits even when probe is dependency-injected", async () => {
     const harness = createHarness();
     harness.probeMedia.mockResolvedValueOnce({ ...INPUT_METADATA, durationSeconds: 1900, format: { ...INPUT_METADATA.format, durationSeconds: 1900 } });
-    const job = harness.service.enqueueDownloadJob(request());
+    const job = await harness.service.enqueueDownloadJob(request());
     const snapshot = await settleJob(harness.queue, job.jobId);
     expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.VIDEO_TOO_LONG } });
     expect(harness.artifactStates[0].discardCalls).toBeGreaterThan(0);
@@ -407,8 +421,8 @@ describe("download orchestration service", () => {
         formats: [{ id: "direct-source", label: "Source", ext: "mp4" }]
       };
     });
-    const first = harness.service.enqueueDownloadJob(request());
-    const second = harness.service.enqueueDownloadJob({ ...request(), url: "https://public.example/second.mp4" });
+    const first = await harness.service.enqueueDownloadJob(request());
+    const second = await harness.service.enqueueDownloadJob({ ...request(), url: "https://public.example/second.mp4" });
     await Promise.resolve();
     const cancelled = await harness.service.cancelDownloadJob(second.jobId);
 
@@ -432,7 +446,7 @@ describe("download orchestration service", () => {
     if (stage === "processing") {
       harness.convertMedia.mockImplementationOnce((options) => waitForAbort(options.signal as AbortSignal));
     }
-    const job = harness.service.enqueueDownloadJob(request(stage === "processing" ? "compatible-mp4" : "original"));
+    const job = await harness.service.enqueueDownloadJob(request(stage === "processing" ? "compatible-mp4" : "original"));
     for (let index = 0; index < 10; index += 1) await Promise.resolve();
     const snapshot = await harness.service.cancelDownloadJob(job.jobId);
 
@@ -442,7 +456,7 @@ describe("download orchestration service", () => {
 
   it("uses onDiscard when completion result cannot be published to the snapshot", async () => {
     const harness = createHarness({ storedFilename: "/private/final.mp4" });
-    const job = harness.service.enqueueDownloadJob(request());
+    const job = await harness.service.enqueueDownloadJob(request());
     const snapshot = await settleJob(harness.queue, job.jobId);
 
     expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.INTERNAL_ERROR } });
@@ -461,7 +475,7 @@ describe("download orchestration service", () => {
         registerFinal: async () => { throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "/private/registry"); }
       };
     });
-    const job = harness.service.enqueueDownloadJob(request());
+    const job = await harness.service.enqueueDownloadJob(request());
     const snapshot = await settleJob(harness.queue, job.jobId);
     expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.DOWNLOAD_FAILED } });
     expect(harness.artifactStates[0].discardCalls).toBeGreaterThan(0);
@@ -488,7 +502,7 @@ describe("download orchestration service", () => {
       };
     });
 
-    const job = harness.service.enqueueDownloadJob(request());
+    const job = await harness.service.enqueueDownloadJob(request());
     await registered;
     const cancellation = harness.service.cancelDownloadJob(job.jobId);
     releaseRegistration();
@@ -502,7 +516,7 @@ describe("download orchestration service", () => {
 
   it("returns only safe public result fields and monotonic progress", async () => {
     const harness = createHarness();
-    const job = harness.service.enqueueDownloadJob(request("compatible-mp4"));
+    const job = await harness.service.enqueueDownloadJob(request("compatible-mp4"));
     const snapshot = await settleJob(harness.queue, job.jobId);
     const serialized = JSON.stringify(snapshot);
 
@@ -521,8 +535,8 @@ describe("download orchestration service", () => {
   it("continues FIFO processing after one download job fails", async () => {
     const harness = createHarness();
     harness.extract.mockRejectedValueOnce(new AppError(API_ERROR_CODES.EXTRACTION_FAILED));
-    const first = harness.service.enqueueDownloadJob(request());
-    const second = harness.service.enqueueDownloadJob({ ...request(), url: "https://public.example/next.mp4" });
+    const first = await harness.service.enqueueDownloadJob(request());
+    const second = await harness.service.enqueueDownloadJob({ ...request(), url: "https://public.example/next.mp4" });
     const firstSnapshot = await settleJob(harness.queue, first.jobId);
     const secondSnapshot = await settleJob(harness.queue, second.jobId);
 
@@ -538,7 +552,7 @@ describe("download orchestration service", () => {
     process.on("unhandledRejection", listener);
     try {
       harness.download.mockRejectedValueOnce(new Error("private failure"));
-      const job = harness.service.enqueueDownloadJob(request());
+      const job = await harness.service.enqueueDownloadJob(request());
       const snapshot = await settleJob(harness.queue, job.jobId);
       expect(snapshot.status).toBe("failed");
       expect(unhandled).toEqual([]);

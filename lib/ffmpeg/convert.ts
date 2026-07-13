@@ -1,6 +1,6 @@
 import { env } from "@/lib/config/env";
 import { AppError } from "@/lib/errors";
-import { prepareLocalMp4Output, type LocalMediaOutput } from "@/lib/ffmpeg/local-output";
+import { prepareLocalMp4Output, type LocalMediaOutput, type LocalMediaOutputDirectoryPolicy } from "@/lib/ffmpeg/local-output";
 import {
   MEDIA_PROCESS_OUTPUT_LIMITS,
   MediaProcessError,
@@ -49,6 +49,7 @@ export type CompatibleMp4Dependencies = {
   maxOutputBytes: number;
   maxDurationSeconds: number;
   threads: number;
+  outputDirectoryPolicy?: LocalMediaOutputDirectoryPolicy;
 };
 
 type CompatibleVideoPlan = {
@@ -302,7 +303,12 @@ export function createCompatibleMp4Converter(dependencies: CompatibleMp4Dependen
 
     try {
       const inputFile = await resolveLocalMediaFile(options.inputPath, dependencies.getAllowedRoot);
-      output = await prepareLocalMp4Output(options.outputPath, inputFile.realPath, dependencies.getAllowedRoot);
+      output = await prepareLocalMp4Output(
+        options.outputPath,
+        inputFile.realPath,
+        dependencies.getAllowedRoot,
+        dependencies.outputDirectoryPolicy
+      );
 
       const inputMetadata = await dependencies.probeMedia(inputFile.realPath, { signal: options.signal });
       assertMediaProbeLimits(inputMetadata, {

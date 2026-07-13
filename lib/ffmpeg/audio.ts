@@ -1,6 +1,6 @@
 import { env } from "@/lib/config/env";
 import { AppError } from "@/lib/errors";
-import { prepareLocalM4aOutput, type LocalMediaOutput } from "@/lib/ffmpeg/local-output";
+import { prepareLocalM4aOutput, type LocalMediaOutput, type LocalMediaOutputDirectoryPolicy } from "@/lib/ffmpeg/local-output";
 import {
   MEDIA_PROCESS_OUTPUT_LIMITS,
   MediaProcessError,
@@ -42,6 +42,7 @@ export type AudioExtractionDependencies = {
   maxOutputBytes: number;
   maxDurationSeconds: number;
   threads: number;
+  outputDirectoryPolicy?: LocalMediaOutputDirectoryPolicy;
 };
 
 function processingFailedError(): AppError {
@@ -189,7 +190,12 @@ export function createAudioExtractor(dependencies: AudioExtractionDependencies) 
 
     try {
       const inputFile = await resolveLocalMediaFile(options.inputPath, dependencies.getAllowedRoot);
-      output = await prepareLocalM4aOutput(options.outputPath, inputFile.realPath, dependencies.getAllowedRoot);
+      output = await prepareLocalM4aOutput(
+        options.outputPath,
+        inputFile.realPath,
+        dependencies.getAllowedRoot,
+        dependencies.outputDirectoryPolicy
+      );
 
       const inputMetadata = await dependencies.probeMedia(inputFile.realPath, { signal: options.signal });
       assertMediaProbeLimits(inputMetadata, {

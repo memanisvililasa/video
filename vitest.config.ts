@@ -5,7 +5,8 @@ import { defineConfig } from "vitest/config";
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 const resolve = {
   alias: {
-    "@": projectRoot
+    "@": projectRoot,
+    "server-only": fileURLToPath(new URL("./tests/server-only-stub.ts", import.meta.url))
   }
 };
 

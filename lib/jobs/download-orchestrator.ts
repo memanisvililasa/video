@@ -24,11 +24,11 @@ import type {
 import type {
   EnqueuedMediaJob,
   MediaJobOutputMetadata,
-  MediaJobQueue,
   MediaJobResult,
   MediaJobSnapshot
-} from "@/lib/jobs/queue";
-import { mediaJobQueue } from "@/lib/jobs/queue";
+} from "@/lib/jobs/types";
+import { mediaJobRuntime } from "@/lib/jobs/queue";
+import type { MediaJobRuntime } from "@/lib/jobs/runtime";
 import { cleanupExpiredFiles, type CleanupExpiredFilesOptions } from "@/lib/storage/cleanup";
 import {
   createJobArtifactLifecycle,
@@ -59,7 +59,7 @@ type ConvertMedia = (options: CompatibleMp4Options) => Promise<CompatibleMp4Resu
 type ExtractAudio = (options: AudioExtractionOptions) => Promise<AudioExtractionResult>;
 
 export type DownloadOrchestrationDependencies = {
-  queue: MediaJobQueue;
+  jobs: MediaJobRuntime;
   validateUrl: (value: unknown) => UrlValidation;
   getExtractor: (url: URL) => Extractor;
   cleanupExpiredFiles: (options?: CleanupExpiredFilesOptions) => Promise<unknown>;
@@ -75,8 +75,8 @@ export type DownloadOrchestrationDependencies = {
 };
 
 export type DownloadOrchestrationService = {
-  enqueueDownloadJob: (request: EnqueueDownloadJobRequest) => EnqueuedMediaJob;
-  getDownloadJob: (jobId: string) => MediaJobSnapshot;
+  enqueueDownloadJob: (request: EnqueueDownloadJobRequest) => Promise<EnqueuedMediaJob>;
+  getDownloadJob: (jobId: string) => Promise<MediaJobSnapshot>;
   cancelDownloadJob: (jobId: string) => Promise<MediaJobSnapshot>;
 };
 
@@ -98,9 +98,9 @@ function validateRequest(request: EnqueueDownloadJobRequest): void {
   if (typeof request.url !== "string") throw invalidRequestError("Укажите ссылку на видео.");
 }
 
-function protectedJobIds(queue: MediaJobQueue): ReadonlySet<string> {
+async function protectedJobIds(jobs: MediaJobRuntime): Promise<ReadonlySet<string>> {
   return new Set(
-    queue.listJobs()
+    (await jobs.listJobs())
       .filter((job) => job.status === "queued" || job.status === "running")
       .map((job) => job.jobId)
   );
@@ -137,7 +137,7 @@ export function createDownloadOrchestrationService(
     throw new TypeError("Download orchestration maxDurationSeconds must be non-negative.");
   }
 
-  function enqueueDownloadJob(request: EnqueueDownloadJobRequest): EnqueuedMediaJob {
+  function enqueueDownloadJob(request: EnqueueDownloadJobRequest): Promise<EnqueuedMediaJob> {
     validateRequest(request);
     const trustedRequest = Object.freeze({
       url: request.url,
@@ -147,7 +147,7 @@ export function createDownloadOrchestrationService(
     });
     let artifacts: JobArtifactLifecycle | undefined;
 
-    return dependencies.queue.enqueue({
+    return dependencies.jobs.enqueue({
       processingPreset: trustedRequest.processingPreset,
       onDiscard: async () => artifacts?.discard(),
       handler: async (job, signal, updateProgress): Promise<MediaJobResult> => {
@@ -160,7 +160,9 @@ export function createDownloadOrchestrationService(
           const url = validation.url;
           const extractor = dependencies.getExtractor(url);
           updateProgress(5);
-          await dependencies.cleanupExpiredFiles({ protectedJobIds: protectedJobIds(dependencies.queue) });
+          await dependencies.cleanupExpiredFiles({
+            protectedJobIds: await protectedJobIds(dependencies.jobs)
+          });
 
           assertNotAborted(signal);
           updateProgress(10);
@@ -203,6 +205,12 @@ export function createDownloadOrchestrationService(
           });
           assertNotAborted(signal);
           const source = await artifacts.registerSource(downloaded);
+          await dependencies.jobs.setSourceMetadata(job.jobId, {
+            sourceId: source.registryId,
+            filename: source.filename,
+            sizeBytes: source.sizeBytes,
+            contentType: source.contentType
+          });
           updateProgress(55);
 
           const inputMetadata = await dependencies.probeMedia(source.path, { signal });
@@ -288,17 +296,17 @@ export function createDownloadOrchestrationService(
 
   return Object.freeze({
     enqueueDownloadJob,
-    getDownloadJob: dependencies.queue.getJob,
-    cancelDownloadJob: dependencies.queue.cancelJob
+    getDownloadJob: dependencies.jobs.getJob,
+    cancelDownloadJob: dependencies.jobs.cancelJob
   });
 }
 
 export function createDefaultDownloadOrchestrationService(
-  queue: MediaJobQueue = mediaJobQueue
+  jobs: MediaJobRuntime = mediaJobRuntime
 ): DownloadOrchestrationService {
   const maxFileSizeBytes = Math.max(1, Math.floor(env.maxFileSizeMb * 1024 * 1024));
   return createDownloadOrchestrationService({
-    queue,
+    jobs,
     validateUrl: validateVideoUrl,
     getExtractor: requireExtractor,
     cleanupExpiredFiles,

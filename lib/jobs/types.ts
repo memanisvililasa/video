@@ -30,18 +30,39 @@ export type MediaJobFailure = {
   message: string;
 };
 
-export type MediaJob = {
+export type MediaJobSourceMetadata = Readonly<{
+  sourceId: string;
+  filename: string;
+  sizeBytes: number;
+  contentType: string;
+  registeredAt: string;
+}>;
+
+/**
+ * Serializable authoritative job state. Runtime-only handlers, promises,
+ * AbortControllers, process handles and local paths must never be added here.
+ */
+export type MediaJobRecord = Readonly<{
   jobId: string;
   status: MediaJobStatus;
   processingPreset: ProcessingPreset;
   createdAt: string;
-  startedAt?: string;
-  completedAt?: string;
-  expiresAt?: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  expiresAt: string | null;
+  cancellationRequestedAt: string | null;
   progress: number;
-  result?: MediaJobResult;
-  error?: MediaJobFailure;
-};
+  sourceMetadata: MediaJobSourceMetadata | null;
+  finalMetadata: Readonly<MediaJobResult> | null;
+  canonicalError: Readonly<MediaJobFailure> | null;
+  retryCount: number;
+  leaseOwner: string | null;
+  leaseExpiresAt: string | null;
+  version: number;
+}>;
+
+/** @deprecated Use MediaJobRecord for persistence and MediaJobSnapshot for API-facing reads. */
+export type MediaJob = MediaJobRecord;
 
 export type MediaJobSnapshot = Readonly<{
   jobId: string;

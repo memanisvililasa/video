@@ -52,7 +52,7 @@ function safeResult(suffix: string): MediaJobResult {
   };
 }
 
-async function flushMicrotasks(rounds = 8): Promise<void> {
+async function flushMicrotasks(rounds = 30): Promise<void> {
   for (let index = 0; index < rounds; index += 1) await Promise.resolve();
 }
 
@@ -104,7 +104,7 @@ describe("in-memory media job queue", () => {
   it("moves one job through queued, running and ready", async () => {
     const harness = createHarness();
     const work = deferred<MediaJobResult>();
-    const enqueued = harness.queue.enqueue({
+    const enqueued = await harness.queue.enqueue({
       processingPreset: "compatible-mp4",
       handler: () => work.promise
     });
@@ -114,7 +114,7 @@ describe("in-memory media job queue", () => {
       snapshot: { status: "queued", progress: 0, processingPreset: "compatible-mp4" }
     });
     await flushMicrotasks();
-    expect(harness.queue.getJob(enqueued.jobId)).toMatchObject({
+    expect(await harness.queue.getJob(enqueued.jobId)).toMatchObject({
       status: "running",
       progress: 0,
       startedAt: new Date(harness.now()).toISOString()
@@ -122,7 +122,7 @@ describe("in-memory media job queue", () => {
 
     work.resolve(safeResult("one"));
     await flushMicrotasks();
-    expect(harness.queue.getJob(enqueued.jobId)).toMatchObject({
+    expect(await harness.queue.getJob(enqueued.jobId)).toMatchObject({
       status: "ready",
       progress: 100,
       result: { ...safeResult("one"), processingPreset: "compatible-mp4" },
@@ -136,7 +136,7 @@ describe("in-memory media job queue", () => {
     const work = [deferred<MediaJobResult>(), deferred<MediaJobResult>(), deferred<MediaJobResult>()];
 
     for (let index = 0; index < work.length; index += 1) {
-      harness.queue.enqueue({
+      await harness.queue.enqueue({
         processingPreset: "original",
         handler: (context) => {
           starts.push(context.jobId);
@@ -164,7 +164,7 @@ describe("in-memory media job queue", () => {
     let maximumActive = 0;
 
     for (let index = 0; index < work.length; index += 1) {
-      harness.queue.enqueue({
+      await harness.queue.enqueue({
         processingPreset: "remux-to-mp4",
         handler: async () => {
           active += 1;
@@ -180,11 +180,11 @@ describe("in-memory media job queue", () => {
 
     await flushMicrotasks();
     expect(active).toBe(2);
-    expect(harness.queue.getStats().runningJobs).toBe(2);
+    expect((await harness.queue.getStats()).runningJobs).toBe(2);
     for (let index = 0; index < work.length; index += 1) {
       work[index].resolve(safeResult(`limit_${index}`));
       await flushMicrotasks();
-      expect(harness.queue.getStats().runningJobs).toBeLessThanOrEqual(2);
+      expect((await harness.queue.getStats()).runningJobs).toBeLessThanOrEqual(2);
     }
     expect(maximumActive).toBe(2);
   });
@@ -194,7 +194,7 @@ describe("in-memory media job queue", () => {
     const starts: string[] = [];
     const work = [deferred<MediaJobResult>(), deferred<MediaJobResult>(), deferred<MediaJobResult>()];
     for (let index = 0; index < work.length; index += 1) {
-      harness.queue.enqueue({
+      await harness.queue.enqueue({
         processingPreset: "audio-only",
         handler: (context) => {
           starts.push(context.jobId);
@@ -218,14 +218,14 @@ describe("in-memory media job queue", () => {
     const first = deferred<MediaJobResult>();
     const second = deferred<MediaJobResult>();
     const starts: string[] = [];
-    const firstJob = harness.queue.enqueue({
+    const firstJob = await harness.queue.enqueue({
       processingPreset: "original",
       handler: (context) => {
         starts.push(context.jobId);
         return first.promise;
       }
     });
-    harness.queue.enqueue({
+    await harness.queue.enqueue({
       processingPreset: "original",
       handler: (context) => {
         starts.push(context.jobId);
@@ -236,7 +236,7 @@ describe("in-memory media job queue", () => {
     await flushMicrotasks();
     first.reject(new Error("first failed"));
     await flushMicrotasks();
-    expect(harness.queue.getJob(firstJob.jobId).status).toBe("failed");
+    expect((await harness.queue.getJob(firstJob.jobId)).status).toBe("failed");
     expect(starts).toEqual(["job_1", "job_2"]);
     second.resolve(safeResult("after_failure"));
     await flushMicrotasks();
@@ -246,8 +246,8 @@ describe("in-memory media job queue", () => {
     const harness = createHarness();
     const runningWork = deferred<MediaJobResult>();
     const queuedHandler = vi.fn(() => safeResult("never"));
-    harness.queue.enqueue({ processingPreset: "original", handler: () => runningWork.promise });
-    const queued = harness.queue.enqueue({ processingPreset: "audio-only", handler: queuedHandler });
+    await harness.queue.enqueue({ processingPreset: "original", handler: () => runningWork.promise });
+    const queued = await harness.queue.enqueue({ processingPreset: "audio-only", handler: queuedHandler });
     await flushMicrotasks();
 
     const snapshot = await harness.queue.cancelJob(queued.jobId);
@@ -265,7 +265,7 @@ describe("in-memory media job queue", () => {
     const harness = createHarness();
     let receivedSignal: AbortSignal | undefined;
     let updateProgress: ((value: number) => void) | undefined;
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "compatible-mp4",
       handler: (_context, signal, update) => {
         receivedSignal = signal;
@@ -282,30 +282,30 @@ describe("in-memory media job queue", () => {
     updateProgress?.(90);
     expect(receivedSignal?.aborted).toBe(true);
     expect(snapshot).toMatchObject({ status: "cancelled", progress: 30 });
-    expect(harness.queue.getJob(job.jobId).progress).toBe(30);
+    expect((await harness.queue.getJob(job.jobId)).progress).toBe(30);
   });
 
   it("cancelling one running job does not affect another", async () => {
     const harness = createHarness({ maxConcurrentJobs: 2 });
     const otherWork = deferred<MediaJobResult>();
-    const cancelled = harness.queue.enqueue({
+    const cancelled = await harness.queue.enqueue({
       processingPreset: "remux-to-mp4",
       handler: (_context, signal) => new Promise<MediaJobResult>((resolve) => {
         signal.addEventListener("abort", () => resolve(safeResult("cancel_one")), { once: true });
       })
     });
-    const other = harness.queue.enqueue({
+    const other = await harness.queue.enqueue({
       processingPreset: "compatible-mp4",
       handler: () => otherWork.promise
     });
     await flushMicrotasks();
 
     await harness.queue.cancelJob(cancelled.jobId);
-    expect(harness.queue.getJob(cancelled.jobId).status).toBe("cancelled");
-    expect(harness.queue.getJob(other.jobId).status).toBe("running");
+    expect((await harness.queue.getJob(cancelled.jobId)).status).toBe("cancelled");
+    expect((await harness.queue.getJob(other.jobId)).status).toBe("running");
     otherWork.resolve(safeResult("other"));
     await flushMicrotasks();
-    expect(harness.queue.getJob(other.jobId).status).toBe("ready");
+    expect((await harness.queue.getJob(other.jobId)).status).toBe("ready");
   });
 
   it.each([
@@ -313,10 +313,10 @@ describe("in-memory media job queue", () => {
     { name: "promise rejection", handler: (() => Promise.reject(new Error("async secret"))) as MediaJobHandler }
   ])("maps handler $name to a sanitized failed snapshot", async ({ handler }) => {
     const harness = createHarness();
-    const job = harness.queue.enqueue({ processingPreset: "original", handler });
+    const job = await harness.queue.enqueue({ processingPreset: "original", handler });
     await flushMicrotasks();
 
-    expect(harness.queue.getJob(job.jobId)).toMatchObject({
+    expect(await harness.queue.getJob(job.jobId)).toMatchObject({
       status: "failed",
       error: {
         code: API_ERROR_CODES.INTERNAL_ERROR,
@@ -328,7 +328,7 @@ describe("in-memory media job queue", () => {
   it("preserves a safe timeout code but discards a handler's custom message", async () => {
     const harness = createHarness();
     const secret = "/private/tmp/video.mp4 stderr -map 0:v";
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "compatible-mp4",
       handler: () => {
         throw new AppError(API_ERROR_CODES.PROCESSING_TIMEOUT, secret);
@@ -336,7 +336,7 @@ describe("in-memory media job queue", () => {
     });
     await flushMicrotasks();
 
-    const snapshot = harness.queue.getJob(job.jobId);
+    const snapshot = await harness.queue.getJob(job.jobId);
     expect(snapshot).toMatchObject({
       status: "failed",
       error: {
@@ -351,7 +351,7 @@ describe("in-memory media job queue", () => {
     const harness = createHarness();
     const work = deferred<MediaJobResult>();
     let update: ((value: number) => void) | undefined;
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "original",
       handler: (_context, _signal, updateProgress) => {
         update = updateProgress;
@@ -361,19 +361,23 @@ describe("in-memory media job queue", () => {
     await flushMicrotasks();
 
     update?.(-10);
-    expect(harness.queue.getJob(job.jobId).progress).toBe(0);
+    await flushMicrotasks();
+    expect((await harness.queue.getJob(job.jobId)).progress).toBe(0);
     update?.(25.5);
-    expect(harness.queue.getJob(job.jobId).progress).toBe(25.5);
+    await flushMicrotasks();
+    expect((await harness.queue.getJob(job.jobId)).progress).toBe(25.5);
     update?.(10);
     update?.(Number.NaN);
-    expect(harness.queue.getJob(job.jobId).progress).toBe(25.5);
+    await flushMicrotasks();
+    expect((await harness.queue.getJob(job.jobId)).progress).toBe(25.5);
     update?.(150);
-    expect(harness.queue.getJob(job.jobId).progress).toBe(100);
+    await flushMicrotasks();
+    expect((await harness.queue.getJob(job.jobId)).progress).toBe(100);
 
     work.resolve(safeResult("progress"));
     await flushMicrotasks();
     update?.(30);
-    expect(harness.queue.getJob(job.jobId)).toMatchObject({ status: "ready", progress: 100 });
+    expect(await harness.queue.getJob(job.jobId)).toMatchObject({ status: "ready", progress: 100 });
   });
 
   it("blocks invalid and duplicate terminal transitions", () => {
@@ -395,8 +399,12 @@ describe("in-memory media job queue", () => {
 
   it("returns JOB_NOT_FOUND for unknown or malformed IDs", async () => {
     const harness = createHarness();
-    expect(captureAppError(() => harness.queue.getJob("job_missing")).code).toBe(API_ERROR_CODES.JOB_NOT_FOUND);
-    expect(captureAppError(() => harness.queue.getJob("../../secret")).code).toBe(API_ERROR_CODES.JOB_NOT_FOUND);
+    expect((await captureAsyncAppError(() => harness.queue.getJob("job_missing"))).code).toBe(
+      API_ERROR_CODES.JOB_NOT_FOUND
+    );
+    expect((await captureAsyncAppError(() => harness.queue.getJob("../../secret"))).code).toBe(
+      API_ERROR_CODES.JOB_NOT_FOUND
+    );
     const error = await captureAsyncAppError(() => harness.queue.cancelJob("job_missing"));
     expect(error.code).toBe(API_ERROR_CODES.JOB_NOT_FOUND);
   });
@@ -404,29 +412,31 @@ describe("in-memory media job queue", () => {
   it("rejects enqueue when the bounded waiting queue is full", async () => {
     const harness = createHarness({ maxConcurrentJobs: 1, maxQueuedJobs: 1 });
     const running = deferred<MediaJobResult>();
-    harness.queue.enqueue({ processingPreset: "original", handler: () => running.promise });
+    await harness.queue.enqueue({ processingPreset: "original", handler: () => running.promise });
     await flushMicrotasks();
-    harness.queue.enqueue({ processingPreset: "original", handler: () => safeResult("queued") });
+    await harness.queue.enqueue({ processingPreset: "original", handler: () => safeResult("queued") });
 
-    const error = captureAppError(() => {
-      harness.queue.enqueue({ processingPreset: "original", handler: () => safeResult("overflow") });
-    });
+    const error = await captureAsyncAppError(() =>
+      harness.queue.enqueue({ processingPreset: "original", handler: () => safeResult("overflow") })
+    );
     expect(error.code).toBe(API_ERROR_CODES.QUEUE_FULL);
-    expect(harness.queue.getStats().queuedJobs).toBe(1);
+    expect((await harness.queue.getStats()).queuedJobs).toBe(1);
     running.resolve(safeResult("capacity_running"));
     await flushMicrotasks();
   });
 
-  it("normalizes invalid or excessive queue configuration safely", () => {
+  it("normalizes invalid or excessive queue configuration safely", async () => {
     const invalidValues = [0, -10, Number.NaN, Number.POSITIVE_INFINITY];
     for (const maxConcurrentJobs of invalidValues) {
       const queue = createMediaJobQueue({ maxConcurrentJobs });
-      expect(queue.getStats().maxConcurrentJobs).toBeGreaterThanOrEqual(1);
-      expect(queue.getStats().maxConcurrentJobs).toBeLessThanOrEqual(MEDIA_JOB_QUEUE_LIMITS.maxConcurrentJobs);
+      expect((await queue.getStats()).maxConcurrentJobs).toBeGreaterThanOrEqual(1);
+      expect((await queue.getStats()).maxConcurrentJobs).toBeLessThanOrEqual(
+        MEDIA_JOB_QUEUE_LIMITS.maxConcurrentJobs
+      );
     }
 
     const excessive = createMediaJobQueue({ maxConcurrentJobs: 10_000, maxQueuedJobs: 100_000 });
-    expect(excessive.getStats()).toMatchObject({
+    expect(await excessive.getStats()).toMatchObject({
       maxConcurrentJobs: MEDIA_JOB_QUEUE_LIMITS.maxConcurrentJobs,
       maxQueuedJobs: MEDIA_JOB_QUEUE_LIMITS.maxQueuedJobs
     });
@@ -434,7 +444,7 @@ describe("in-memory media job queue", () => {
 
   it("returns immutable snapshots that cannot mutate internal state", async () => {
     const harness = createHarness();
-    const enqueued = harness.queue.enqueue({
+    const enqueued = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => safeResult("immutable")
     });
@@ -442,53 +452,55 @@ describe("in-memory media job queue", () => {
     expect(() => {
       (enqueued.snapshot as { progress: number }).progress = 99;
     }).toThrow();
-    expect(harness.queue.getJob(enqueued.jobId).progress).toBe(0);
+    expect((await harness.queue.getJob(enqueued.jobId)).progress).toBe(0);
 
     await flushMicrotasks();
-    const ready = harness.queue.getJob(enqueued.jobId);
+    const ready = await harness.queue.getJob(enqueued.jobId);
     expect(Object.isFrozen(ready)).toBe(true);
     expect(Object.isFrozen(ready.result)).toBe(true);
     expect(() => {
       (ready.result as { filename: string }).filename = "/private/secret";
     }).toThrow();
-    expect(harness.queue.getJob(enqueued.jobId).result?.filename).toBe("immutable.mp4");
+    expect((await harness.queue.getJob(enqueued.jobId)).result?.filename).toBe("immutable.mp4");
   });
 
   it("assigns terminal TTL and removes expired terminal jobs", async () => {
     const harness = createHarness({ terminalTtlMs: 1000 });
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => safeResult("ttl")
     });
     await flushMicrotasks();
 
-    const ready = harness.queue.getJob(job.jobId);
+    const ready = await harness.queue.getJob(job.jobId);
     expect(ready.status).toBe("ready");
     expect(ready.expiresAt).toBe(new Date(harness.now() + 1000).toISOString());
     harness.advanceBy(999);
-    expect(harness.queue.cleanupExpiredJobs()).toBe(0);
+    expect(await harness.queue.cleanupExpiredJobs()).toBe(0);
     harness.advanceBy(1);
-    expect(harness.queue.cleanupExpiredJobs()).toBe(1);
-    expect(captureAppError(() => harness.queue.getJob(job.jobId)).code).toBe(API_ERROR_CODES.JOB_NOT_FOUND);
+    expect(await harness.queue.cleanupExpiredJobs()).toBe(1);
+    expect((await captureAsyncAppError(() => harness.queue.getJob(job.jobId))).code).toBe(
+      API_ERROR_CODES.JOB_NOT_FOUND
+    );
   });
 
   it("never removes queued or running jobs during cleanup", async () => {
     const harness = createHarness({ maxConcurrentJobs: 1, terminalTtlMs: 10 });
     const runningWork = deferred<MediaJobResult>();
-    const running = harness.queue.enqueue({
+    const running = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => runningWork.promise
     });
-    const queued = harness.queue.enqueue({
+    const queued = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => safeResult("queued_cleanup")
     });
     await flushMicrotasks();
     harness.advanceBy(100_000);
 
-    expect(harness.queue.cleanupExpiredJobs()).toBe(0);
-    expect(harness.queue.getJob(running.jobId).status).toBe("running");
-    expect(harness.queue.getJob(queued.jobId).status).toBe("queued");
+    expect(await harness.queue.cleanupExpiredJobs()).toBe(0);
+    expect((await harness.queue.getJob(running.jobId)).status).toBe("running");
+    expect((await harness.queue.getJob(queued.jobId)).status).toBe("queued");
     runningWork.resolve(safeResult("running_cleanup"));
     await flushMicrotasks();
   });
@@ -496,7 +508,7 @@ describe("in-memory media job queue", () => {
   it("keeps cancellation authoritative when completion races with abort", async () => {
     const harness = createHarness();
     const work = deferred<MediaJobResult>();
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "compatible-mp4",
       handler: () => work.promise
     });
@@ -507,7 +519,7 @@ describe("in-memory media job queue", () => {
     const cancelled = await cancellation;
     expect(cancelled.status).toBe("cancelled");
     expect(cancelled.result).toBeUndefined();
-    expect(harness.queue.getJob(job.jobId).status).toBe("cancelled");
+    expect((await harness.queue.getJob(job.jobId)).status).toBe("cancelled");
   });
 
   it("does not start the next job twice when a thenable completes more than once", async () => {
@@ -520,25 +532,25 @@ describe("in-memory media job queue", () => {
       }
     };
 
-    const first = harness.queue.enqueue({
+    const first = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => duplicateThenable as unknown as Promise<MediaJobResult>
     });
-    harness.queue.enqueue({ processingPreset: "original", handler: secondHandler });
+    await harness.queue.enqueue({ processingPreset: "original", handler: secondHandler });
     await flushMicrotasks(16);
 
-    expect(harness.queue.getJob(first.jobId).result?.fileId).toBe("file_first_resolution");
+    expect((await harness.queue.getJob(first.jobId)).result?.fileId).toBe("file_first_resolution");
     expect(secondHandler).toHaveBeenCalledTimes(1);
   });
 
   it("returns a stable snapshot when cancelling a terminal job", async () => {
     const harness = createHarness();
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "audio-only",
       handler: () => safeResult("terminal")
     });
     await flushMicrotasks();
-    const before = harness.queue.getJob(job.jobId);
+    const before = await harness.queue.getJob(job.jobId);
     const after = await harness.queue.cancelJob(job.jobId);
     expect(before.status).toBe("ready");
     expect(after).toEqual(before);
@@ -547,7 +559,7 @@ describe("in-memory media job queue", () => {
   it("rejects unsafe handler results without exposing paths", async () => {
     const harness = createHarness();
     const secretPath = "/private/tmp/output.mp4";
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => ({
         ...safeResult("unsafe"),
@@ -557,7 +569,7 @@ describe("in-memory media job queue", () => {
     });
     await flushMicrotasks();
 
-    const snapshot = harness.queue.getJob(job.jobId);
+    const snapshot = await harness.queue.getJob(job.jobId);
     expect(snapshot).toMatchObject({
       status: "failed",
       error: { code: API_ERROR_CODES.INTERNAL_ERROR }
@@ -572,12 +584,12 @@ describe("in-memory media job queue", () => {
     process.on("unhandledRejection", listener);
 
     try {
-      const job = harness.queue.enqueue({
+      const job = await harness.queue.enqueue({
         processingPreset: "original",
         handler: () => Promise.reject(new Error("handled rejection"))
       });
       await flushMicrotasks(16);
-      expect(harness.queue.getJob(job.jobId).status).toBe("failed");
+      expect((await harness.queue.getJob(job.jobId)).status).toBe("failed");
       expect(unhandled).toEqual([]);
     } finally {
       process.off("unhandledRejection", listener);
@@ -587,7 +599,7 @@ describe("in-memory media job queue", () => {
   it("provides only safe immutable context to handlers", async () => {
     const harness = createHarness();
     let receivedContext: object | undefined;
-    const job = harness.queue.enqueue({
+    const job = await harness.queue.enqueue({
       processingPreset: "remux-to-mp4",
       handler: (context) => {
         receivedContext = context;
@@ -607,32 +619,32 @@ describe("in-memory media job queue", () => {
 
   it("maps a handler cancellation error to cancelled and keeps processing", async () => {
     const harness = createHarness();
-    const cancelled = harness.queue.enqueue({
+    const cancelled = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => {
         throw new AppError(API_ERROR_CODES.JOB_CANCELLED, "/private/cancelled");
       }
     });
-    const next = harness.queue.enqueue({
+    const next = await harness.queue.enqueue({
       processingPreset: "original",
       handler: () => safeResult("after_cancel_error")
     });
     await flushMicrotasks(16);
 
-    expect(harness.queue.getJob(cancelled.jobId)).toMatchObject({
+    expect(await harness.queue.getJob(cancelled.jobId)).toMatchObject({
       status: "cancelled",
       error: { message: API_ERROR_MESSAGES.JOB_CANCELLED }
     });
-    expect(harness.queue.getJob(next.jobId).status).toBe("ready");
+    expect((await harness.queue.getJob(next.jobId)).status).toBe("ready");
   });
 
   it("listJobs returns frozen snapshots without exposing internal controllers or handlers", async () => {
     const harness = createHarness();
     const work = deferred<MediaJobResult>();
-    harness.queue.enqueue({ processingPreset: "original", handler: () => work.promise });
+    await harness.queue.enqueue({ processingPreset: "original", handler: () => work.promise });
     await flushMicrotasks();
 
-    const snapshots = harness.queue.listJobs();
+    const snapshots = await harness.queue.listJobs();
     expect(Object.isFrozen(snapshots)).toBe(true);
     expect(Object.isFrozen(snapshots[0])).toBe(true);
     expect(snapshots[0]).not.toHaveProperty("handler");

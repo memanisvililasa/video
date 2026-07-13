@@ -450,11 +450,30 @@ export function createMediaProcessRunner(dependencies: MediaProcessRunnerDepende
   };
 }
 
-export const runMediaProcess = createMediaProcessRunner({
-  spawnProcess: spawn,
-  killProcess: defaultKillProcess,
-  platform: process.platform,
-  now: () => performance.now(),
+export type ConfiguredMediaProcessRunnerOptions = Readonly<{
+  binaryPaths: Readonly<Record<MediaTool, string>>;
+  nodeEnv: string;
+  pathValue?: string;
+  killGraceMs: number;
+}>;
+
+/** Server-owned process runner construction for the standalone worker. */
+export function createConfiguredMediaProcessRunner(
+  options: ConfiguredMediaProcessRunnerOptions
+): ReturnType<typeof createMediaProcessRunner> {
+  return createMediaProcessRunner({
+    spawnProcess: spawn,
+    killProcess: defaultKillProcess,
+    platform: process.platform,
+    now: () => performance.now(),
+    binaryPaths: options.binaryPaths,
+    nodeEnv: options.nodeEnv,
+    pathValue: options.pathValue,
+    killGraceMs: options.killGraceMs
+  });
+}
+
+export const runMediaProcess = createConfiguredMediaProcessRunner({
   binaryPaths: {
     ffmpeg: env.ffmpegPath,
     ffprobe: env.ffprobePath

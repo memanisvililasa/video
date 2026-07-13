@@ -8,6 +8,7 @@ const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SAFE_OUTPUT_BASENAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,135}$/;
 
 type LocalMediaOutputExtension = "mp4" | "m4a";
+export type LocalMediaOutputDirectoryPolicy = "same-directory" | "same-root";
 
 export type LocalMediaOutput = {
   finalPath: string;
@@ -64,8 +65,12 @@ async function prepareLocalMediaOutput(
   outputPath: string,
   inputRealPath: string,
   getAllowedRoot: () => string,
-  extension: LocalMediaOutputExtension
+  extension: LocalMediaOutputExtension,
+  directoryPolicy: LocalMediaOutputDirectoryPolicy
 ): Promise<LocalMediaOutput> {
+  if (directoryPolicy !== "same-directory" && directoryPolicy !== "same-root") {
+    throw processingFailedError();
+  }
   if (
     typeof outputPath !== "string" ||
     !outputPath ||
@@ -114,7 +119,9 @@ async function prepareLocalMediaOutput(
   }
 
   assertContained(canonicalRoot, canonicalOutputDirectory);
-  if (canonicalOutputDirectory !== path.dirname(inputRealPath)) throw processingFailedError();
+  if (directoryPolicy === "same-directory" && canonicalOutputDirectory !== path.dirname(inputRealPath)) {
+    throw processingFailedError();
+  }
 
   let finalPath: string;
   let partialPath: string;
@@ -173,16 +180,18 @@ async function prepareLocalMediaOutput(
 export function prepareLocalMp4Output(
   outputPath: string,
   inputRealPath: string,
-  getAllowedRoot: () => string
+  getAllowedRoot: () => string,
+  directoryPolicy: LocalMediaOutputDirectoryPolicy = "same-directory"
 ): Promise<LocalMediaOutput> {
-  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "mp4");
+  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "mp4", directoryPolicy);
 }
 
 /** @internal Shared M4A output lifecycle for trusted local FFmpeg operations. */
 export function prepareLocalM4aOutput(
   outputPath: string,
   inputRealPath: string,
-  getAllowedRoot: () => string
+  getAllowedRoot: () => string,
+  directoryPolicy: LocalMediaOutputDirectoryPolicy = "same-directory"
 ): Promise<LocalMediaOutput> {
-  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "m4a");
+  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "m4a", directoryPolicy);
 }

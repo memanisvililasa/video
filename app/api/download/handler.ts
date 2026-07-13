@@ -16,7 +16,7 @@ const MAX_BODY_BYTES = 8 * 1024;
 const NO_STORE_HEADERS = Object.freeze({ "Cache-Control": "no-store" });
 
 export type DownloadPostDependencies = Readonly<{
-  enqueueDownloadJob: (request: CreateDownloadJobRequest) => EnqueuedMediaJob;
+  enqueueDownloadJob: (request: CreateDownloadJobRequest) => EnqueuedMediaJob | Promise<EnqueuedMediaJob>;
   checkRateLimit: (input: RateLimitKeyInput) => RateLimitResult;
 }>;
 
@@ -116,7 +116,7 @@ export function createDownloadPostHandler(dependencies: DownloadPostDependencies
       }
 
       const body = await parseRequestBody(request);
-      const enqueued = dependencies.enqueueDownloadJob(body);
+      const enqueued = await dependencies.enqueueDownloadJob(body);
       const data = serializeCreateDownloadJobData(enqueued.snapshot);
       const response: ApiSuccess<CreateDownloadJobData> = Object.freeze({ ok: true, data });
 
