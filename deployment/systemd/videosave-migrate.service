@@ -1,0 +1,36 @@
+[Unit]
+Description=VideoSave PostgreSQL migrations (operator-triggered)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=videosave-migrate
+Group=videosave-migrate
+WorkingDirectory=/opt/videosave/current
+EnvironmentFile=/etc/videosave/migration.env
+ExecStartPre=/usr/bin/node /opt/videosave/current/tools/verify-release.mjs /opt/videosave/current
+ExecStart=/usr/bin/node /opt/videosave/current/scripts/postgres-migrations.mjs apply
+ExecStartPost=/usr/bin/node /opt/videosave/current/scripts/postgres-migrations.mjs status
+Restart=no
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videosave-migrate
+UMask=0077
+LimitNOFILE=4096
+TasksMax=64
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/opt/videosave /etc/videosave

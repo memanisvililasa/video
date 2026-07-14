@@ -12,6 +12,7 @@ function webEnvironment(overrides: Record<string, string | undefined> = {}) {
     POSTGRES_SSL_MODE: "disable",
     MEDIA_STORAGE_BACKEND: "durable-volume",
     MEDIA_STORAGE_ROOT: "/srv/videosave-media",
+    MEDIA_STORAGE_AUTHORITY_ID: "0123456789abcdef0123456789abcdef",
     NODE_ENV: "test",
     ...overrides
   };

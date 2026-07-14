@@ -13,7 +13,11 @@ import { createPostgresMediaArtifactRuntime } from "@/lib/storage/postgres/artif
 import { createMediaStorageReconciler, type MediaStorageReconciler } from "@/lib/storage/reconciliation";
 
 export type ExplicitDurableMediaRuntime = Readonly<{
-  config: MediaStorageConfig & Readonly<{ backend: "durable-volume"; root: string }>;
+  config: MediaStorageConfig & Readonly<{
+    backend: "durable-volume";
+    root: string;
+    authorityId: string;
+  }>;
   storage: DurableVolumeStorage["storage"];
   inventory: DurableVolumeStorage["inventory"];
   health: DurableVolumeStorage["health"];
@@ -39,10 +43,19 @@ export function createExplicitDurableMediaRuntime(
     throw new TypeError("Durable media storage requires the PostgreSQL repository backend.");
   }
   const parsedStorage = parseMediaStorageConfig(source);
-  if (parsedStorage.backend !== "durable-volume" || parsedStorage.root === null) {
+  if (
+    parsedStorage.backend !== "durable-volume" ||
+    parsedStorage.root === null ||
+    parsedStorage.authorityId === null
+  ) {
     throw new TypeError("Explicit durable media runtime requires durable-volume storage.");
   }
-  const config = Object.freeze({ ...parsedStorage, backend: "durable-volume" as const, root: parsedStorage.root });
+  const config = Object.freeze({
+    ...parsedStorage,
+    backend: "durable-volume" as const,
+    root: parsedStorage.root,
+    authorityId: parsedStorage.authorityId
+  });
   const postgres = getSharedPostgresPool(repositoryConfig.postgres, { schema: options.postgresSchema });
   const volume = createDurableVolumeStorage({
     root: config.root,
@@ -70,7 +83,7 @@ export function createExplicitDurableMediaRuntime(
     reconciler,
     async readiness() {
       await postgres.readiness();
-      await assertDurableVolumeMarker(config.root);
+      await assertDurableVolumeMarker(config.root, config.authorityId);
       await volume.storage.initialize();
       await volume.health.check();
     },

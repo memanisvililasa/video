@@ -6,7 +6,10 @@ import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DURABLE_VOLUME_MARKER_FILENAME } from "@/lib/storage/durable-volume-marker";
 import { runProductionWebReadiness } from "@/lib/web/readiness";
-import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
+import {
+  provisionDurableVolumeTestRoot,
+  TEST_DURABLE_VOLUME_AUTHORITY_ID
+} from "@/tests/helpers/durable-volume";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
 
 const { Client } = pg;
@@ -33,6 +36,7 @@ function source(root: string, overrides: Record<string, string | undefined> = {}
     POSTGRES_IDLE_TIMEOUT_MS: "1000",
     MEDIA_STORAGE_BACKEND: "durable-volume",
     MEDIA_STORAGE_ROOT: root,
+    MEDIA_STORAGE_AUTHORITY_ID: TEST_DURABLE_VOLUME_AUTHORITY_ID,
     MEDIA_STORAGE_MAX_JOB_BYTES: "2097152",
     MEDIA_STORAGE_MAX_OUTPUT_BYTES: "1048576",
     MEDIA_FINAL_TTL_SECONDS: "60",

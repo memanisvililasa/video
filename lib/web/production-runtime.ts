@@ -65,7 +65,10 @@ export function createProductionWebRuntime(
     activeTtlSeconds: config.queue.activeTtlSeconds
   });
   const artifactRuntime = createPostgresMediaArtifactRuntime({ pool: postgres.pool });
-  const storage = createReadonlyDurableVolumeStorage(config.storage.root);
+  const storage = createReadonlyDurableVolumeStorage(
+    config.storage.root,
+    config.storage.authorityId
+  );
   const jobs = createPersistentDownloadJobService({
     repository,
     queue,

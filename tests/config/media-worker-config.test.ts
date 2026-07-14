@@ -10,6 +10,7 @@ function workerEnvironment(overrides: Record<string, string | undefined> = {}) {
     POSTGRES_POOL_MAX: "4",
     MEDIA_STORAGE_BACKEND: "durable-volume",
     MEDIA_STORAGE_ROOT: "/srv/videosave-media",
+    MEDIA_STORAGE_AUTHORITY_ID: "0123456789abcdef0123456789abcdef",
     WORKER_CONCURRENCY: "2",
     NODE_ENV: "test",
     ...overrides

@@ -1,0 +1,51 @@
+[Unit]
+Description=VideoSave standalone web/API
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/videosave/media
+StartLimitIntervalSec=60s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=videosave-web
+Group=videosave-web
+SupplementaryGroups=videosave-media
+WorkingDirectory=/opt/videosave/current
+EnvironmentFile=/etc/videosave/web.env
+ExecStartPre=/usr/bin/node /opt/videosave/current/tools/verify-release.mjs /opt/videosave/current
+ExecStartPre=/usr/bin/node /opt/videosave/current/checks/web-readiness.mjs
+ExecStart=/usr/bin/node /opt/videosave/current/server.js
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=45s
+SendSIGKILL=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videosave-web
+UMask=0027
+LimitNOFILE=65536
+TasksMax=256
+MemoryMax=1G
+CPUQuota=200%
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/opt/videosave /etc/videosave /var/lib/videosave/media
+InaccessiblePaths=/var/lib/videosave/media/jobs
+
+[Install]
+WantedBy=multi-user.target

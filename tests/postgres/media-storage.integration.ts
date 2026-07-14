@@ -21,7 +21,10 @@ import { createPostgresMediaArtifactRuntime, type PostgresMediaArtifactRuntime }
 import { createExplicitDurableMediaRuntime } from "@/lib/storage/postgres/factory";
 import { createMediaStorageReconciler } from "@/lib/storage/reconciliation";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
-import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
+import {
+  provisionDurableVolumeTestRoot,
+  TEST_DURABLE_VOLUME_AUTHORITY_ID
+} from "@/tests/helpers/durable-volume";
 
 const { Client, Pool: PgPool } = pg;
 const testDatabaseUrl = process.env.TEST_DATABASE_URL?.trim();
@@ -156,6 +159,7 @@ describe("PostgreSQL durable artifact registry and shared volume", () => {
       NODE_ENV: "test",
       MEDIA_STORAGE_BACKEND: "durable-volume",
       MEDIA_STORAGE_ROOT: explicitRoot,
+      MEDIA_STORAGE_AUTHORITY_ID: TEST_DURABLE_VOLUME_AUTHORITY_ID,
       MEDIA_STORAGE_MAX_JOB_BYTES: "2097152",
       MEDIA_STORAGE_MAX_OUTPUT_BYTES: "1048576",
       MEDIA_FINAL_TTL_SECONDS: "60",

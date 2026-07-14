@@ -1,0 +1,107 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: videosave_ci
+          POSTGRES_USER: videosave_ci
+          POSTGRES_PASSWORD: disposable_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U videosave_ci -d videosave_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://videosave_ci:disposable_ci_only@127.0.0.1:5432/videosave_ci
+      POSTGRES_SSL_MODE: disable
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+          cache: npm
+
+      - name: Pin npm toolchain
+        run: npm install --global npm@11.6.0
+
+      - name: Install FFmpeg runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Validate migration catalog
+        run: |
+          npm run db:migrate:test
+          npm run db:migrate:test:status
+
+      - name: Unit and browser regression
+        run: |
+          npm run test:unit
+          npm run test:browser
+
+      - name: PostgreSQL, worker, and media regression
+        run: |
+          npm run test:postgres
+          npm run test:worker
+          npm run test:worker:smoke
+
+      - name: Deployment contract
+        run: npm run test:deployment
+
+      - name: Static and build gates
+        run: |
+          npm run typecheck
+          npm run build:worker
+          npm run build
+
+      - name: Immutable release gate
+        run: |
+          npm run build:release
+          npm run verify:release
+          npm run test:release
+
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Scope and secret exclusion audit
+        run: |
+          npm run verify:deployment
+          git diff --check
+          test -z "$(git status --short --untracked-files=all)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: videosave-phase-a-release
+          path: |
+            .release-dist/*.tar.gz
+            .release-dist/*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14

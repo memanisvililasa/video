@@ -1,0 +1,52 @@
+[Unit]
+Description=VideoSave durable media worker
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/videosave/media
+StartLimitIntervalSec=120s
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=videosave-worker
+Group=videosave-worker
+SupplementaryGroups=videosave-media
+WorkingDirectory=/opt/videosave/current
+EnvironmentFile=/etc/videosave/worker.env
+ExecStartPre=/usr/bin/node /opt/videosave/current/tools/verify-release.mjs /opt/videosave/current
+ExecStartPre=/usr/bin/node /opt/videosave/current/worker/main.mjs --check
+ExecStart=/usr/bin/node /opt/videosave/current/worker/main.mjs
+Restart=on-failure
+RestartSec=10s
+KillSignal=SIGTERM
+# SIGTERM reaches the worker first; remaining FFmpeg children are killed only after the grace window.
+KillMode=mixed
+TimeoutStopSec=330s
+SendSIGKILL=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=videosave-worker
+UMask=0027
+LimitNOFILE=65536
+TasksMax=512
+MemoryMax=4G
+CPUQuota=400%
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/opt/videosave /etc/videosave
+ReadWritePaths=/var/lib/videosave/media
+
+[Install]
+WantedBy=multi-user.target

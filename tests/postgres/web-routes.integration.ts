@@ -22,7 +22,10 @@ import {
   createProductionWebRuntime,
   type ProductionWebRuntime
 } from "@/lib/web/production-runtime";
-import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
+import {
+  provisionDurableVolumeTestRoot,
+  TEST_DURABLE_VOLUME_AUTHORITY_ID
+} from "@/tests/helpers/durable-volume";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
 
 const { Client, Pool: PgPool } = pg;
@@ -76,6 +79,7 @@ function source(root = storageRoot, overrides: Record<string, string | undefined
     POSTGRES_IDLE_TIMEOUT_MS: "1000",
     MEDIA_STORAGE_BACKEND: "durable-volume",
     MEDIA_STORAGE_ROOT: root,
+    MEDIA_STORAGE_AUTHORITY_ID: TEST_DURABLE_VOLUME_AUTHORITY_ID,
     MEDIA_STORAGE_MAX_JOB_BYTES: "10485760",
     MEDIA_STORAGE_MAX_OUTPUT_BYTES: "5242880",
     MEDIA_FINAL_TTL_SECONDS: "60",

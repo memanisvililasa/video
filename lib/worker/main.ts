@@ -13,9 +13,11 @@ export async function runMediaWorkerMain(
   const checkOnly = argv[0] === "--check";
   const logger = createStructuredWorkerLogger();
   let runtime: ReturnType<typeof createProductionMediaWorkerRuntime> | null = null;
+  let started = false;
   let fatal = false;
   let signalCount = 0;
   try {
+    logger.info("worker.startup", { role: "worker" });
     runtime = createProductionMediaWorkerRuntime(source, { logger });
     await runtime.readiness();
     if (checkOnly) {
@@ -24,6 +26,7 @@ export async function runMediaWorkerMain(
     }
 
     await runtime.startup();
+    started = true;
 
     const requestShutdown = (reason: string, force = false): void => {
       if (!runtime) return;
@@ -62,5 +65,6 @@ export async function runMediaWorkerMain(
     return 1;
   } finally {
     await runtime?.close().catch(() => undefined);
+    if (started) logger.info("worker.shutdown.complete");
   }
 }

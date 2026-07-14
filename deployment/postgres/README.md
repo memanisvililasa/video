@@ -1,0 +1,7 @@
+# PostgreSQL Phase A role boundary
+
+`roles.sql.example` is an operator-reviewed template, not an automatic migration. It contains no password and assumes the application database is provisioned separately. Supply its quoted `videosave_database` psql variable, create/rotate credentials through the host secret channel, require verified TLS, and run migrations as `videosave_migration` before applying the table grants.
+
+`videosave_migration` owns `public` and migrations 001-004. `videosave_web` can enqueue/read/cancel jobs and read published artifact metadata. `videosave_worker` can claim/update/delete lifecycle state and manage artifact metadata. Neither runtime role owns schema objects or has superuser, `CREATEDB`, `CREATEROLE`, or replication privileges. The split matches the SQL currently present in `lib/jobs/postgres` and `lib/storage/postgres`; a future migration must review the allowlist explicitly.
+
+Run `privilege-audit.sql` using a read-only administrative connection and compare its rows with the template. It performs only catalog `SELECT` statements. PostgreSQL must be local/private or managed on a private boundary; it is never exposed to the Internet. If a managed provider cannot transfer `public` ownership, document the provider-specific owner while preserving the same runtime grants. A temporary shared runtime role is not the recommended Phase A target and must never own schema objects.

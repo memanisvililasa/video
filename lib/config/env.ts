@@ -46,6 +46,7 @@ export type MediaStorageBackend = "local" | "durable-volume";
 export type MediaStorageConfig = Readonly<{
   backend: MediaStorageBackend;
   root: string | null;
+  authorityId: string | null;
   maxJobBytes: number;
   maxOutputBytes: number;
   finalTtlSeconds: number;
@@ -82,14 +83,22 @@ export type MediaWorkerConfig = Readonly<{
   expiredRetentionSeconds: number;
   queue: JobQueueConfig;
   repository: Extract<JobRepositoryConfig, { backend: "postgres" }>;
-  storage: MediaStorageConfig & Readonly<{ backend: "durable-volume"; root: string }>;
+  storage: MediaStorageConfig & Readonly<{
+    backend: "durable-volume";
+    root: string;
+    authorityId: string;
+  }>;
 }>;
 
 export type ProductionWebConfig = Readonly<{
   role: "web";
   repository: Extract<JobRepositoryConfig, { backend: "postgres" }>;
   queue: Readonly<{ activeTtlSeconds: number }>;
-  storage: MediaStorageConfig & Readonly<{ backend: "durable-volume"; root: string }>;
+  storage: MediaStorageConfig & Readonly<{
+    backend: "durable-volume";
+    root: string;
+    authorityId: string;
+  }>;
 }>;
 
 export type RateLimitSecurityConfig = Readonly<{
@@ -130,6 +139,8 @@ export const MEDIA_STORAGE_CONFIG_LIMITS = Object.freeze({
   lowDiskBytes: Object.freeze({ min: 1_048_576, max: 1_099_511_627_776, default: 1_073_741_824 }),
   cleanupBatchSize: Object.freeze({ min: 1, max: 1_000, default: 100 })
 });
+
+const DURABLE_VOLUME_AUTHORITY_ID = /^[a-f0-9]{32}$/;
 
 export const MEDIA_WORKER_CONFIG_LIMITS = Object.freeze({
   concurrency: Object.freeze({ min: 1, max: 8, default: 2 }),
@@ -420,7 +431,9 @@ export function parseMediaStorageConfig(
   }
 
   const configuredRoot = source.MEDIA_STORAGE_ROOT?.trim();
+  const configuredAuthorityId = source.MEDIA_STORAGE_AUTHORITY_ID?.trim();
   let root: string | null = null;
+  let authorityId: string | null = null;
   if (backend === "durable-volume") {
     if (!configuredRoot) {
       throw new TypeError("MEDIA_STORAGE_ROOT is required for durable-volume storage.");
@@ -433,11 +446,20 @@ export function parseMediaStorageConfig(
       throw new TypeError("MEDIA_STORAGE_ROOT must be a valid absolute path.");
     }
     root = path.normalize(configuredRoot);
+    if (configuredAuthorityId) {
+      if (!DURABLE_VOLUME_AUTHORITY_ID.test(configuredAuthorityId)) {
+        throw new TypeError("MEDIA_STORAGE_AUTHORITY_ID must be exactly 32 lowercase hexadecimal characters.");
+      }
+      authorityId = configuredAuthorityId;
+    }
+  } else if (configuredAuthorityId) {
+    throw new TypeError("MEDIA_STORAGE_AUTHORITY_ID is only valid for durable-volume storage.");
   }
 
   const config = Object.freeze({
     backend,
     root,
+    authorityId,
     maxJobBytes: parseBoundedInteger(
       "MEDIA_STORAGE_MAX_JOB_BYTES",
       source.MEDIA_STORAGE_MAX_JOB_BYTES,
@@ -482,7 +504,11 @@ export function parseProductionWebConfig(
     throw new TypeError("The production web runtime requires JOB_REPOSITORY_BACKEND=postgres.");
   }
   const parsedStorage = parseMediaStorageConfig(source);
-  if (parsedStorage.backend !== "durable-volume" || parsedStorage.root === null) {
+  if (
+    parsedStorage.backend !== "durable-volume" ||
+    parsedStorage.root === null ||
+    parsedStorage.authorityId === null
+  ) {
     throw new TypeError("The production web runtime requires MEDIA_STORAGE_BACKEND=durable-volume.");
   }
   return Object.freeze({
@@ -498,7 +524,8 @@ export function parseProductionWebConfig(
     storage: Object.freeze({
       ...parsedStorage,
       backend: "durable-volume" as const,
-      root: parsedStorage.root
+      root: parsedStorage.root,
+      authorityId: parsedStorage.authorityId
     })
   });
 }
@@ -534,7 +561,11 @@ export function parseMediaWorkerConfig(
     throw new TypeError("The media worker requires JOB_REPOSITORY_BACKEND=postgres.");
   }
   const parsedStorage = parseMediaStorageConfig(source);
-  if (parsedStorage.backend !== "durable-volume" || parsedStorage.root === null) {
+  if (
+    parsedStorage.backend !== "durable-volume" ||
+    parsedStorage.root === null ||
+    parsedStorage.authorityId === null
+  ) {
     throw new TypeError("The media worker requires MEDIA_STORAGE_BACKEND=durable-volume.");
   }
   const queueBase = parseJobQueueConfig(source);
@@ -590,7 +621,8 @@ export function parseMediaWorkerConfig(
   const storage = Object.freeze({
     ...parsedStorage,
     backend: "durable-volume" as const,
-    root: parsedStorage.root
+    root: parsedStorage.root,
+    authorityId: parsedStorage.authorityId
   });
   const dbLossGraceMs = parseBoundedNonNegativeInteger(
     "WORKER_DB_LOSS_GRACE_MS",

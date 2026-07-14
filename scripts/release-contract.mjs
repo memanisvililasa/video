@@ -28,6 +28,7 @@ export const RELEASE_ENTRYPOINTS = Object.freeze({
   worker: "worker/main.mjs",
   workerReadiness: "worker/main.mjs --check",
   migration: "scripts/postgres-migrations.mjs",
+  productionSmoke: "smoke/production-smoke.mjs",
   releaseVerify: "tools/verify-release.mjs"
 });
 
@@ -38,6 +39,7 @@ const ALLOWED_TOP_LEVEL = new Set([
   "node_modules",
   "public",
   "scripts",
+  "smoke",
   "tools",
   "worker",
   RELEASE_CHECKSUMS_FILE,
@@ -297,7 +299,7 @@ function validateManifest(manifest) {
   ) {
     throw releaseError("Release toolchain metadata is invalid.");
   }
-  if (manifest.runtimeAuthority !== "postgres-durable" || manifest.storageMarkerVersion !== "v1") {
+  if (manifest.runtimeAuthority !== "postgres-durable" || manifest.storageMarkerVersion !== "v2") {
     throw releaseError("Release runtime authority is invalid.");
   }
   if (stableJson(manifest.entrypoints) !== stableJson(RELEASE_ENTRYPOINTS)) {
@@ -357,6 +359,7 @@ export async function verifyReleaseRoot(root, options = {}) {
     RELEASE_ENTRYPOINTS.webReadiness,
     RELEASE_ENTRYPOINTS.worker,
     RELEASE_ENTRYPOINTS.migration,
+    RELEASE_ENTRYPOINTS.productionSmoke,
     RELEASE_ENTRYPOINTS.releaseVerify,
     "tools/release-contract.mjs",
     RELEASE_MANIFEST_FILE,

@@ -181,7 +181,8 @@ export async function assembleRelease({
   await Promise.all([
     assertRegularFile(path.join(standaloneRoot, "server.js")),
     assertRegularFile(path.join(projectRoot, ".worker-dist/main.mjs")),
-    assertRegularFile(path.join(projectRoot, ".web-readiness-dist/main.mjs"))
+    assertRegularFile(path.join(projectRoot, ".web-readiness-dist/main.mjs")),
+    assertRegularFile(path.join(projectRoot, ".production-smoke-dist/main.mjs"))
   ]);
 
   await rm(outputRoot, { recursive: true, force: true });
@@ -206,12 +207,14 @@ export async function assembleRelease({
     mkdir(path.join(releaseRoot, "worker"), { recursive: true }),
     mkdir(path.join(releaseRoot, "checks"), { recursive: true }),
     mkdir(path.join(releaseRoot, "scripts"), { recursive: true }),
+    mkdir(path.join(releaseRoot, "smoke"), { recursive: true }),
     mkdir(path.join(releaseRoot, "db/migrations"), { recursive: true }),
     mkdir(path.join(releaseRoot, "tools"), { recursive: true })
   ]);
   await Promise.all([
     cp(path.join(projectRoot, ".worker-dist/main.mjs"), path.join(releaseRoot, "worker/main.mjs")),
     cp(path.join(projectRoot, ".web-readiness-dist/main.mjs"), path.join(releaseRoot, "checks/web-readiness.mjs")),
+    cp(path.join(projectRoot, ".production-smoke-dist/main.mjs"), path.join(releaseRoot, "smoke/production-smoke.mjs")),
     cp(path.join(projectRoot, "scripts/postgres-migrations.mjs"), path.join(releaseRoot, "scripts/postgres-migrations.mjs")),
     cp(path.join(projectRoot, "scripts/verify-release.mjs"), path.join(releaseRoot, "tools/verify-release.mjs")),
     cp(path.join(projectRoot, "scripts/release-contract.mjs"), path.join(releaseRoot, "tools/release-contract.mjs")),
@@ -252,7 +255,7 @@ export async function assembleRelease({
     entrypoints: RELEASE_ENTRYPOINTS,
     migrations: Object.freeze(migrations),
     runtimeAuthority: "postgres-durable",
-    storageMarkerVersion: "v1"
+    storageMarkerVersion: "v2"
   });
   await writeFile(path.join(releaseRoot, RELEASE_MANIFEST_FILE), stableJson(manifest), { mode: 0o644, flag: "wx" });
   const withManifest = await hashReleaseFiles(releaseRoot, { exclude: [RELEASE_CHECKSUMS_FILE] });
@@ -291,6 +294,7 @@ async function main() {
   });
   await run(process.execPath, [path.join(projectRoot, "scripts/build-worker.mjs")]);
   await run(process.execPath, [path.join(projectRoot, "scripts/build-web-readiness.mjs")]);
+  await run(process.execPath, [path.join(projectRoot, "scripts/build-production-smoke.mjs")]);
   await assembleRelease({
     packageMetadata,
     gitCommit,

@@ -68,7 +68,7 @@ function dependencies(overrides: { healthy?: boolean; leader?: boolean } = {}) {
   };
 }
 
-function coordinator(deps: ReturnType<typeof dependencies>) {
+function coordinator(deps: ReturnType<typeof dependencies>, selectedLogger: WorkerLogger = logger) {
   return createMediaLifecycleCoordinator({
     enabled: true,
     election: deps.election,
@@ -76,7 +76,7 @@ function coordinator(deps: ReturnType<typeof dependencies>) {
     queue: deps.queue,
     reconciler: deps.reconciler,
     storageHealth: deps.storageHealth,
-    logger,
+    logger: selectedLogger,
     recoveryIntervalMs: 1_000,
     reconciliationIntervalMs: 1_000,
     storageHealthIntervalMs: 1_000,
@@ -105,6 +105,27 @@ describe("media lifecycle coordinator", () => {
     expect(lifecycle.canClaim()).toBe(true);
     await lifecycle.stop();
     expect(deps.leadership.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs sanitised leadership acquisition and release boundaries", async () => {
+    const deps = dependencies();
+    const events: Array<{ level: string; event: string; fields?: object }> = [];
+    const selectedLogger: WorkerLogger = {
+      info: (event, fields) => { events.push({ level: "info", event, fields }); },
+      warn: (event, fields) => { events.push({ level: "warn", event, fields }); },
+      error: (event, fields) => { events.push({ level: "error", event, fields }); }
+    };
+    const lifecycle = coordinator(deps, selectedLogger);
+    await lifecycle.startup();
+    await lifecycle.stop();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: "info", event: "worker.lifecycle.leadership-acquired" }),
+      expect.objectContaining({
+        level: "info",
+        event: "worker.lifecycle.leadership-lost",
+        fields: { reason: "shutdown" }
+      })
+    ]));
   });
 
   it("allows a healthy follower to process but never runs destructive maintenance", async () => {

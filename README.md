@@ -19,7 +19,7 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 Текущий репозиторий ещё не готов к публичному multi-user production. Phase A architecture утверждена, но реализация Stage 5.9 продолжается.
 
-PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone immutable release contract относится к 5.9.8B1; systemd/Nginx и host runbook остаются 5.9.8B2, а финальный traffic cutover/rollback audit — 5.9.8C. Реальный production deployment не выполнен.
+PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone release относится к 5.9.8B1; systemd/Nginx, volume/release tooling и host runbook добавлены как templates в 5.9.8B2; финальный traffic cutover/rollback audit остаётся 5.9.8C. Реальный production deployment не выполнен.
 
 ## Ограничения
 
@@ -54,6 +54,10 @@ corepack npm run test:release
 
 Builder создаёт allowlist-only root `.release-dist/release`, затем manifest, SHA-256 checksums и после verification — deterministic tar.gz archive. В release входят Next.js standalone server/static assets, compiled worker, web readiness, migration runner и неизменённые migrations `001`–`004`. `.env*`, source/tests, media, cache, logs, source maps, Git metadata и runtime data исключены. Build не требует PostgreSQL, volume или production ENV и не запускает web, worker либо migration. Подробный contract и запуск из release root описаны в [production release note](docs/production-release.md).
 
+## Phase A deployment boundary (5.9.8B2)
+
+Systemd/Nginx/PostgreSQL templates, durable-volume authority tooling, immutable install/promotion, rollback compatibility, production smoke и validation-only CI описаны в [deployment runbook](deployment/README.md). Это repository templates/tooling: production host, traffic, TLS, firewall и services не изменялись.
+
 ## ENV
 
 Список базовых переменных находится в `.env.example`.
@@ -64,7 +68,7 @@ Builder создаёт allowlist-only root `.release-dist/release`, затем m
 
 Все неопознанные HTTP-клиенты используют один стабильный identifier внутри каждого rate-limit bucket. Это исключает обход лимитов подделкой заголовков, но означает, что один активный клиент может исчерпать общую квоту bucket для остальных. Перед публичным multi-user deployment нужен отдельный проверенный ingress/provider adapter с недоступным напрямую origin и надёжным peer identity.
 
-`TRUST_PROXY_MODE=nginx-single-host` добавляет только application-side contract будущей 5.9.8B2 ingress boundary. В этом режиме web читает ровно один внутренний header `X-VideoSave-Client-IP`, принимает только одиночный валидный IPv4/IPv6 и по-прежнему игнорирует публичные forwarding headers. Режим нельзя включать до того, как Nginx очищает входящий internal header, устанавливает его сам и origin слушает только loopback; B1 не добавляет Nginx config и не делает этот режим самостоятельно безопасным для Internet.
+`TRUST_PROXY_MODE=nginx-single-host` используется только с B2 single-host ingress boundary. Web читает ровно один внутренний header `X-VideoSave-Client-IP`, принимает одиночный валидный IPv4/IPv6 и игнорирует публичные forwarding headers. B2 Nginx template перезаписывает header непосредственным client address; режим безопасен только при loopback origin, Nginx-only ingress и operator-enforced firewall boundary.
 
 `RATE_LIMIT_MAX_REQUESTS` должен быть целым числом от 1 до 10000. Значение `0` не отключает rate limiting и считается ошибкой конфигурации.
 
@@ -82,7 +86,7 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 
 `APP_PROCESS_ROLE` поддерживает `local|web|worker|migration`. В development/test отсутствующее значение означает `local`; в production роль обязательна, а `local` отклоняется. `web` требует `JOB_REPOSITORY_BACKEND=postgres`, `DATABASE_URL`, `MEDIA_STORAGE_BACKEND=durable-volume` и заранее подготовленный shared root. PostgreSQL/volume failure завершается fail-closed: fallback и dual-write отсутствуют. Durable execution payload является private internal data и не входит в public DTO.
 
-`MEDIA_STORAGE_BACKEND` по умолчанию равен `local` только для local/test runtime. Web и worker требуют `durable-volume`, абсолютный заранее подготовленный `MEDIA_STORAGE_ROOT` и PostgreSQL registry из migration `003`. В root должен существовать non-secret regular marker `.videosave-volume` с точным содержимым `videosave-media-volume:v1\n`; runtime его не создаёт. Web использует отдельный read-only adapter и открывает только PostgreSQL-зарегистрированный `published final`, а worker сохраняет read-write boundary. Internal storage keys, source и partial artifacts не являются public API. Object storage и signed URLs относятся к Phase B.
+`MEDIA_STORAGE_BACKEND` по умолчанию равен `local` только для local/test runtime. Web и worker требуют `durable-volume`, абсолютный заранее подготовленный `MEDIA_STORAGE_ROOT`, одинаковый non-secret `MEDIA_STORAGE_AUTHORITY_ID` и PostgreSQL registry из migration `003`. Marker `.videosave-volume` содержит v2 header и authority ID; runtime его не создаёт. Web использует read-only adapter и открывает только PostgreSQL-registered `published final`, worker сохраняет read-write boundary. Internal keys, source и partial artifacts не являются public API. Object storage и signed URLs относятся к Phase B.
 
 Production web readiness собирается и запускается отдельно; она только читает DB/schema/volume и всегда закрывает pool:
 

@@ -109,11 +109,20 @@ export function createMediaLifecycleCoordinator(
     if (wasHealthy && !storageHealthy) notifyUnsafe();
   }
 
+  async function releaseLeadership(reason: string, warning: boolean): Promise<void> {
+    const owned = leadership;
+    if (!owned) return;
+    leadership = null;
+    await owned.release().catch(() => undefined);
+    const event = "worker.lifecycle.leadership-lost";
+    if (warning) options.logger.warn(event, { reason });
+    else options.logger.info(event, { reason });
+  }
+
   async function verifyLeadership(): Promise<boolean> {
     if (!leadership) return false;
-    if (await leadership.verify()) return true;
-    await leadership.release().catch(() => undefined);
-    leadership = null;
+    if (await leadership.verify().catch(() => false)) return true;
+    await releaseLeadership("verification", true);
     return false;
   }
 
@@ -122,7 +131,7 @@ export function createMediaLifecycleCoordinator(
     try {
       leadership = await options.election.tryAcquire();
       markDatabase(true);
-      if (leadership) options.logger.info("worker.lifecycle.elected");
+      if (leadership) options.logger.info("worker.lifecycle.leadership-acquired");
       return leadership !== null;
     } catch {
       markDatabase(false);
@@ -198,8 +207,7 @@ export function createMediaLifecycleCoordinator(
       markDatabase(false);
       options.logger.warn("worker.lifecycle.sweep-failed", { phase });
       if (!(await leadership?.verify().catch(() => false))) {
-        await leadership?.release().catch(() => undefined);
-        leadership = null;
+        await releaseLeadership("sweep-failure", true);
       }
       return false;
     }
@@ -269,8 +277,7 @@ export function createMediaLifecycleCoordinator(
     await startupPromise?.catch(() => undefined);
     await pending?.catch(() => undefined);
     pending = null;
-    await leadership?.release().catch(() => undefined);
-    leadership = null;
+    await releaseLeadership("shutdown", false);
   }
 
   return Object.freeze({

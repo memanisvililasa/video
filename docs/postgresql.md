@@ -1,6 +1,8 @@
 # PostgreSQL development and testing
 
-Подэтапы 5.9.3–5.9.8A добавляют PostgreSQL implementation `JobRepository`, durable queue/lease adapter, explicit Phase A shared-volume storage runtime, отдельный compiled Node worker, elected lifecycle coordination и role-aware production web composition. `APP_PROCESS_ROLE=web` routes используют persistent enqueue/status/cancellation и PostgreSQL artifact delivery; memory queue и process-local registry остаются только local/test compatibility adapters. Deployment wiring и реальный traffic cutover отсутствуют.
+Phase A least-privilege role template и read-only audit находятся в [`deployment/postgres`](../deployment/postgres). Production использует отдельные migration/web/worker credentials, verified TLS и private connectivity; runtime roles не владеют schema. Deployment sequence находится в [`deployment/README.md`](../deployment/README.md).
+
+Подэтапы 5.9.3–5.9.8A добавляют PostgreSQL implementation `JobRepository`, durable queue/lease adapter, explicit Phase A shared-volume storage runtime, отдельный compiled Node worker, elected lifecycle coordination и role-aware production web composition. `APP_PROCESS_ROLE=web` routes используют persistent enqueue/status/cancellation и PostgreSQL artifact delivery; memory queue и process-local registry остаются только local/test compatibility adapters. B2 добавляет только deployment templates/tooling; реальный traffic cutover отсутствует.
 
 ## Конфигурация
 
@@ -72,7 +74,7 @@ Read-write runtime создаётся через `createExplicitDurableMediaRunt
 - `MEDIA_STORAGE_LOW_DISK_BYTES` — fail-closed reserve threshold;
 - `MEDIA_CLEANUP_BATCH_SIZE` — 1–1000.
 
-Import и `next build` не создают directories и не требуют volume/DB. Durable root содержит regular non-writable-by-group/other marker `.videosave-volume` с точным non-secret содержимым `videosave-media-volume:v1\n`; marker provisioned out of band и никогда не создаётся runtime-ом. Web readiness проверяет root/marker/`published` только на read/execute и не пишет; worker readiness затем проверяет read-write/free-space boundary. Оба процесса монтируют один POSIX volume. Root не должен быть world-writable; production не fallback-ится в temp directory.
+Import и `next build` не создают directories и не требуют volume/DB. Durable root содержит regular non-writable-by-group/other marker `.videosave-volume` с v2 header и non-secret 32-hex authority ID. Ожидаемый ID задаётся через `MEDIA_STORAGE_AUTHORITY_ID`; marker provisioned out of band и не создаётся runtime-ом. Web readiness проверяет root/marker/`published` read-only; worker readiness проверяет read-write/free-space. Оба процесса используют один POSIX volume. Root не world-writable; production не fallback-ится в temp.
 
 Attempt workspace имеет server-generated layout `jobs/<job>/attempts/<attempt>/{source,partial,staged}`. Immutable final публикуется hard-link/no-overwrite в sharded `published/` namespace. Artifact сначала резервируется как `staged`, физический final создаётся, затем одна PostgreSQL transaction переводит artifact в `published` и job в `ready`; lease owner/version/attempt и PostgreSQL time проверяются под row locks. Общей filesystem/DB transaction не предполагается: elected lifecycle coordinator запускает bounded reconciler для stale staged rows, missing files и physical orphans. Отдельный scheduler daemon не добавлен.
 
@@ -90,7 +92,7 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 
 Production command никогда не использует `TEST_DATABASE_URL`; test command создаёт отдельную schema и temporary marked root. Readiness сверяет exact checksums `001`–`004`, required tables/columns и выполняет только read-only zero-row capability queries. Migrations по-прежнему применяются отдельной command; production migration command требует `APP_PROCESS_ROLE=migration`.
 
-Standalone immutable release contract и role-specific environment templates относятся к 5.9.8B1 и описаны в [production release note](production-release.md). Systemd/Nginx/host runbook остаются 5.9.8B2, финальный rollback/cutover audit — 5.9.8C. Этот документ не означает, что production deployment уже выполнен.
+Standalone release contract и role-specific environment templates относятся к 5.9.8B1 и описаны в [production release note](production-release.md). Systemd/Nginx/PostgreSQL templates, volume/release/smoke tooling и host runbook реализованы в [deployment boundary](../deployment/README.md) B2. Финальный rollback/cutover audit — 5.9.8C. Production deployment не выполнялся.
 
 Object storage и multi-host durability относятся к Phase B. Потеря controlled host/shared volume остаётся известным Phase A failure domain.
 

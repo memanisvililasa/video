@@ -44,7 +44,8 @@ function validateExpectedSize(value: number): number {
 
 /** A web-only adapter: it never creates, chmods, publishes, removes, or cleans. */
 export function createReadonlyDurableVolumeStorage(
-  rootValue: string
+  rootValue: string,
+  authorityId: string
 ): ReadonlyMediaObjectStorage {
   if (
     typeof rootValue !== "string" ||
@@ -55,6 +56,9 @@ export function createReadonlyDurableVolumeStorage(
     throw new TypeError("Durable media storage root must be an absolute path.");
   }
   const configuredRoot = path.normalize(rootValue);
+  if (!/^[a-f0-9]{32}$/.test(authorityId)) {
+    throw new TypeError("Durable media volume authority is invalid.");
+  }
   let canonicalRoot: string | null = null;
 
   function requireRoot(): string {
@@ -76,7 +80,7 @@ export function createReadonlyDurableVolumeStorage(
   async function validateRoot(): Promise<string> {
     try {
       const resolved = await assertDirectory(configuredRoot);
-      await assertDurableVolumeMarker(resolved);
+      await assertDurableVolumeMarker(resolved, authorityId);
       await assertDirectory(
         assertSafePath(resolved, path.join(/* turbopackIgnore: true */ resolved, "published")),
         resolved

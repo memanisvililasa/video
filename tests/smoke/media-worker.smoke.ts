@@ -10,7 +10,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Extractor } from "@/lib/extractors/types";
 import { createProductionMediaWorkerRuntime, type ProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
-import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
+import {
+  provisionDurableVolumeTestRoot,
+  TEST_DURABLE_VOLUME_AUTHORITY_ID
+} from "@/tests/helpers/durable-volume";
 
 const runFile = promisify(execFile);
 const { Client } = pg;
@@ -110,6 +113,7 @@ describe("real ffprobe/FFmpeg worker smoke", () => {
       POSTGRES_IDLE_TIMEOUT_MS: "2000",
       MEDIA_STORAGE_BACKEND: "durable-volume",
       MEDIA_STORAGE_ROOT: storageRoot,
+      MEDIA_STORAGE_AUTHORITY_ID: TEST_DURABLE_VOLUME_AUTHORITY_ID,
       MEDIA_STORAGE_MAX_JOB_BYTES: "10485760",
       MEDIA_STORAGE_MAX_OUTPUT_BYTES: "5242880",
       MEDIA_FINAL_TTL_SECONDS: "60",

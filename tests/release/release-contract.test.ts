@@ -57,6 +57,7 @@ async function createReleaseFixture(): Promise<string> {
     write(root, "worker/main.mjs", "export {};\n"),
     write(root, "checks/web-readiness.mjs", "export {};\n"),
     write(root, "scripts/postgres-migrations.mjs", "export {};\n"),
+    write(root, "smoke/production-smoke.mjs", "export {};\n"),
     write(root, "tools/verify-release.mjs", "export {};\n"),
     write(root, "tools/release-contract.mjs", "export {};\n")
   ]);
@@ -101,7 +102,7 @@ async function createReleaseFixture(): Promise<string> {
     entrypoints: RELEASE_ENTRYPOINTS,
     migrations,
     runtimeAuthority: "postgres-durable",
-    storageMarkerVersion: "v1"
+    storageMarkerVersion: "v2"
   };
   await write(root, RELEASE_MANIFEST_FILE, stableJson(manifest));
   await write(root, RELEASE_CHECKSUMS_FILE, formatChecksums(await hashReleaseFiles(root)));

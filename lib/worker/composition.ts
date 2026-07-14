@@ -227,7 +227,7 @@ export function createProductionMediaWorkerRuntime(
     }
     await postgres.readiness();
     await assertSchemaCompatible(postgres.pool);
-    await assertDurableVolumeMarker(config.storage.root);
+    await assertDurableVolumeMarker(config.storage.root, config.storage.authorityId);
     await volume.storage.initialize();
     await volume.health.check();
     const production = source.NODE_ENV?.trim() === "production";

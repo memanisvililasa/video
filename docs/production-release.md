@@ -1,6 +1,6 @@
-# Production release contract (5.9.8B1)
+# Production release and deployment contract (5.9.8B1/B2)
 
-Этот документ описывает только воспроизводимую standalone release boundary. Он не является production deployment runbook: systemd, Nginx, TLS, firewall, host provisioning и smoke/cutover automation остаются 5.9.8B2/5.9.8C.
+Этот документ описывает standalone release boundary B1. Phase A templates, installation/promotion, smoke и operator runbook добавлены в [deployment runbook](../deployment/README.md) в B2. Реальный deploy не выполнялся; полный failure tabletop остаётся 5.9.8C.
 
 ## Toolchain и команды
 
@@ -26,6 +26,7 @@ Release содержит только:
 - compiled worker `worker/main.mjs`;
 - read-only web readiness `checks/web-readiness.mjs`;
 - migration runner `scripts/postgres-migrations.mjs` и migrations `001`–`004`;
+- explicit operator-triggered production smoke bundle;
 - self-contained release verifier;
 - minimal runtime-only package metadata и Next.js-traced Node dependencies (`next`, React и `pg`);
 - deterministic manifest и SHA-256 checksums.
@@ -43,6 +44,7 @@ APP_PROCESS_ROLE=worker NODE_ENV=production node worker/main.mjs --check
 APP_PROCESS_ROLE=worker NODE_ENV=production node worker/main.mjs
 APP_PROCESS_ROLE=migration NODE_ENV=production node scripts/postgres-migrations.mjs status
 APP_PROCESS_ROLE=migration NODE_ENV=production node scripts/postgres-migrations.mjs apply
+APP_PROCESS_ROLE=worker NODE_ENV=production node smoke/production-smoke.mjs --no-egress --base-url <explicit-origin>
 node tools/verify-release.mjs .
 ```
 
@@ -60,6 +62,6 @@ Artifact platform-specific: manifest фиксирует `<platform>-<arch>`, а 
 
 `deployment/env/*.env.example` — documentation templates, а не загружаемые repository `.env`. Перед будущим deployment их нужно скопировать вне release, заменить placeholders и ограничить mode `0600` либо `0640`. Production никогда не использует `TEST_DATABASE_URL`.
 
-Web и worker используют разные runtime credentials, migration — отдельную DDL-capable role. Все роли указываются явно через `APP_PROCESS_ROLE`. Web требует read-only access к тому же durable root, worker — read-write; marker `.videosave-volume` с exact content `videosave-media-volume:v1\n` provisioned out of band.
+Web и worker используют разные runtime credentials, migration — отдельную DDL-capable role. Все роли указываются явно через `APP_PROCESS_ROLE`. Web требует read-only access к тому же durable root, worker — read-write; marker `.videosave-volume` содержит v2 header и non-secret authority ID, совпадающий с `MEDIA_STORAGE_AUTHORITY_ID` обеих ролей. B1 marker v1 не совместим с authority-bound v2 и блокируется rollback compatibility checker.
 
-`TRUST_PROXY_MODE=nginx-single-host` — только contract будущего B2 ingress. Он принимает fixed internal `X-VideoSave-Client-IP` и не доверяет стандартным forwarding headers. До реализации header sanitization, loopback-only origin и firewall boundary этот режим нельзя включать на публичном origin.
+`TRUST_PROXY_MODE=nginx-single-host` принимает fixed internal `X-VideoSave-Client-IP` и не доверяет стандартным forwarding headers. B2 Nginx template перезаписывает header непосредственным client address; режим безопасен только с loopback-only origin и Nginx-only ingress.
