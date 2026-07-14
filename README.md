@@ -19,7 +19,7 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 Текущий репозиторий ещё не готов к публичному multi-user production. Phase A architecture утверждена, но реализация Stage 5.9 продолжается.
 
-PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js; deployment manifests, ingress и реальный traffic cutover ещё не выполнены и относятся к 5.9.8B/5.9.8C.
+PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone immutable release contract относится к 5.9.8B1; systemd/Nginx и host runbook остаются 5.9.8B2, а финальный traffic cutover/rollback audit — 5.9.8C. Реальный production deployment не выполнен.
 
 ## Ограничения
 
@@ -40,15 +40,31 @@ npm run typecheck
 npm run build
 ```
 
+## Immutable production release (5.9.8B1)
+
+Production release собирается только утверждённым toolchain Node.js `24.18.0` + npm `11.6.0`:
+
+```bash
+corepack npm --version # must print 11.6.0
+corepack npm run build:release
+corepack npm run verify:release
+corepack npm run package:release
+corepack npm run test:release
+```
+
+Builder создаёт allowlist-only root `.release-dist/release`, затем manifest, SHA-256 checksums и после verification — deterministic tar.gz archive. В release входят Next.js standalone server/static assets, compiled worker, web readiness, migration runner и неизменённые migrations `001`–`004`. `.env*`, source/tests, media, cache, logs, source maps, Git metadata и runtime data исключены. Build не требует PostgreSQL, volume или production ENV и не запускает web, worker либо migration. Подробный contract и запуск из release root описаны в [production release note](docs/production-release.md).
+
 ## ENV
 
 Список базовых переменных находится в `.env.example`.
 
 ### Rate limiting и reverse proxy
 
-`TRUST_PROXY_MODE=none` — единственная поддерживаемая политика. Приложение не доверяет `Forwarded`, `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`, `X-Client-IP` и другим клиентским IP-заголовкам, потому что текущий Next.js Route Handler не предоставляет адрес непосредственного сетевого peer.
+`TRUST_PROXY_MODE=none` остаётся безопасным local/test default: приложение не доверяет `Forwarded`, `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP`, `X-Client-IP` и другим клиентским IP-заголовкам.
 
 Все неопознанные HTTP-клиенты используют один стабильный identifier внутри каждого rate-limit bucket. Это исключает обход лимитов подделкой заголовков, но означает, что один активный клиент может исчерпать общую квоту bucket для остальных. Перед публичным multi-user deployment нужен отдельный проверенный ingress/provider adapter с недоступным напрямую origin и надёжным peer identity.
+
+`TRUST_PROXY_MODE=nginx-single-host` добавляет только application-side contract будущей 5.9.8B2 ingress boundary. В этом режиме web читает ровно один внутренний header `X-VideoSave-Client-IP`, принимает только одиночный валидный IPv4/IPv6 и по-прежнему игнорирует публичные forwarding headers. Режим нельзя включать до того, как Nginx очищает входящий internal header, устанавливает его сам и origin слушает только loopback; B1 не добавляет Nginx config и не делает этот режим самостоятельно безопасным для Internet.
 
 `RATE_LIMIT_MAX_REQUESTS` должен быть целым числом от 1 до 10000. Значение `0` не отключает rate limiting и считается ошибкой конфигурации.
 
@@ -97,4 +113,4 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run test:worker:smoke
 ```
 
-Smoke использует локальный временный fixture, настоящие ffprobe/FFmpeg и не обращается во внешний Internet. SIGTERM/SIGINT прекращают новые claims, сохраняют renewal на bounded grace period, затем abort-ят download/probe/FFmpeg и закрывают pool. Один worker process выбирается PostgreSQL advisory lock-ом для bounded recovery/reconciliation; остальные продолжают processing без destructive maintenance. Production API cutover и deployment wiring ещё не выполнены.
+Smoke использует локальный временный fixture, настоящие ffprobe/FFmpeg и не обращается во внешний Internet. SIGTERM/SIGINT прекращают новые claims, сохраняют renewal на bounded grace period, затем abort-ят download/probe/FFmpeg и закрывают pool. Один worker process выбирается PostgreSQL advisory lock-ом для bounded recovery/reconciliation; остальные продолжают processing без destructive maintenance. Persistent production API composition выполнена; host deployment wiring и реальный traffic cutover ещё не выполнены.

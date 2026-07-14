@@ -42,6 +42,12 @@ describe("rate-limit security configuration", () => {
     expect(parseRateLimitSecurityConfig({ TRUST_PROXY_MODE: "   " }).trustProxyMode).toBe("none");
   });
 
+  it("accepts only the explicit single-host Nginx trust mode", () => {
+    expect(parseRateLimitSecurityConfig({
+      TRUST_PROXY_MODE: "nginx-single-host"
+    }).trustProxyMode).toBe("nginx-single-host");
+  });
+
   it.each(["hops", "cidr", "vercel", "true", "1", "NONE"])(
     "rejects unsupported TRUST_PROXY_MODE=%s instead of enabling trust",
     (value) => {
@@ -165,5 +171,54 @@ describe("trust-none HTTP client identifier", () => {
     expect(getRateLimitConfig("job-status").maxRequests).toBe(Math.max(env.rateLimitMaxRequests, 120));
     expect(getRateLimitConfig("job-cancel").maxRequests).toBe(Math.min(env.rateLimitMaxRequests, 20));
     expect(getRateLimitConfig("file").maxRequests).toBe(Math.max(env.rateLimitMaxRequests, 120));
+  });
+});
+
+describe("single-host Nginx client identifier", () => {
+  it.each([
+    ["IPv4", "198.51.100.24", "198.51.100.24"],
+    ["IPv6", "2001:DB8::24", "2001:db8::24"],
+    ["private IPv4", "10.0.0.24", "10.0.0.24"]
+  ])("accepts one proxy-owned %s identity", (_name, value, expected) => {
+    expect(resolveRateLimitClientIdentifier(headers({
+      "X-VideoSave-Client-IP": value
+    }), "nginx-single-host")).toBe(expected);
+  });
+
+  it.each([
+    {},
+    { "X-VideoSave-Client-IP": "" },
+    { "X-VideoSave-Client-IP": "not-an-ip" },
+    { "X-VideoSave-Client-IP": "198.51.100.1, 203.0.113.2" },
+    { "X-VideoSave-Client-IP": "198.51.100.1:443" },
+    { "X-VideoSave-Client-IP": "[2001:db8::1]" }
+  ])("fails closed for a missing or invalid trusted header", (values) => {
+    expect(resolveRateLimitClientIdentifier(
+      headers(values as Record<string, string>),
+      "nginx-single-host"
+    )).toBe("unidentified");
+  });
+
+  it("ignores all public forwarding headers when the fixed trusted header is absent", () => {
+    expect(resolveRateLimitClientIdentifier(headers({
+      Forwarded: "for=198.51.100.1",
+      "X-Forwarded-For": "198.51.100.2",
+      "X-Real-IP": "198.51.100.3",
+      "CF-Connecting-IP": "198.51.100.4"
+    }), "nginx-single-host")).toBe("unidentified");
+  });
+
+  it("does not allow other headers to replace a valid proxy-owned identity", () => {
+    expect(createRateLimitKey({
+      bucket: "download",
+      headers: headers({
+        "X-VideoSave-Client-IP": "198.51.100.8",
+        "X-Forwarded-For": "203.0.113.9"
+      })
+    })).toBe("download:unidentified");
+    expect(resolveRateLimitClientIdentifier(headers({
+      "X-VideoSave-Client-IP": "198.51.100.8",
+      "X-Forwarded-For": "203.0.113.9"
+    }), "nginx-single-host")).toBe("198.51.100.8");
   });
 });

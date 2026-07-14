@@ -7,7 +7,7 @@ function numberFromEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-export type TrustProxyMode = "none";
+export type TrustProxyMode = "none" | "nginx-single-host";
 
 export type ApplicationProcessRole = "local" | "web" | "worker" | "migration";
 
@@ -158,7 +158,8 @@ export const MEDIA_WORKER_CONFIG_LIMITS = Object.freeze({
 function parseTrustProxyMode(value: string | undefined): TrustProxyMode {
   const normalized = value?.trim();
   if (!normalized || normalized === "none") return "none";
-  throw new TypeError("TRUST_PROXY_MODE must be exactly 'none'.");
+  if (normalized === "nginx-single-host") return normalized;
+  throw new TypeError("TRUST_PROXY_MODE must be exactly 'none' or 'nginx-single-host'.");
 }
 
 function parseBoundedPositiveInteger(

@@ -90,7 +90,7 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 
 Production command никогда не использует `TEST_DATABASE_URL`; test command создаёт отдельную schema и temporary marked root. Readiness сверяет exact checksums `001`–`004`, required tables/columns и выполняет только read-only zero-row capability queries. Migrations по-прежнему применяются отдельной command; production migration command требует `APP_PROCESS_ROLE=migration`.
 
-Systemd/Nginx/deployment manifests и release/cutover runbook относятся к 5.9.8B, финальный rollback/cutover audit — к 5.9.8C. Этот документ не означает, что production deployment уже выполнен.
+Standalone immutable release contract и role-specific environment templates относятся к 5.9.8B1 и описаны в [production release note](production-release.md). Systemd/Nginx/host runbook остаются 5.9.8B2, финальный rollback/cutover audit — 5.9.8C. Этот документ не означает, что production deployment уже выполнен.
 
 Object storage и multi-host durability относятся к Phase B. Потеря controlled host/shared volume остаётся известным Phase A failure domain.
 

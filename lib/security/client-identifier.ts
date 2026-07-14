@@ -1,6 +1,16 @@
+import { isIP } from "node:net";
 import { env, type TrustProxyMode } from "@/lib/config/env";
 
 export const UNIDENTIFIED_RATE_LIMIT_CLIENT = "unidentified";
+export const TRUSTED_NGINX_CLIENT_IP_HEADER = "x-videosave-client-ip";
+
+function trustedNginxClientIdentifier(headers: Headers): string {
+  const candidate = headers.get(TRUSTED_NGINX_CLIENT_IP_HEADER)?.trim();
+  if (!candidate || candidate.length > 64 || isIP(candidate) === 0) {
+    return UNIDENTIFIED_RATE_LIMIT_CLIENT;
+  }
+  return candidate.toLowerCase();
+}
 
 /**
  * Resolve the identifier used for unauthenticated HTTP rate limiting.
@@ -13,11 +23,11 @@ export function resolveRateLimitClientIdentifier(
   headers: Headers,
   mode: TrustProxyMode = env.trustProxyMode
 ): string {
-  void headers;
-
   switch (mode) {
     case "none":
       return UNIDENTIFIED_RATE_LIMIT_CLIENT;
+    case "nginx-single-host":
+      return trustedNginxClientIdentifier(headers);
     default: {
       const exhaustive: never = mode;
       throw new TypeError(`Unsupported trust proxy mode: ${String(exhaustive)}`);

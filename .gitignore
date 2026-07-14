@@ -3,6 +3,7 @@ node_modules
 .next
 .worker-dist
 .web-readiness-dist
+.release-dist
 out
 .env*
 !.env.example

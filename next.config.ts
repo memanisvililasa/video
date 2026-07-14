@@ -3,9 +3,12 @@ import type { NextConfig } from "next";
 const scriptSource = process.env.NODE_ENV === "development"
   ? "'self' 'unsafe-inline' 'unsafe-eval'"
   : "'self' 'unsafe-inline'";
+const releaseBuildId = process.env.VIDEOSAVE_BUILD_ID?.trim();
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   poweredByHeader: false,
+  ...(releaseBuildId ? { generateBuildId: async () => releaseBuildId } : {}),
   async headers() {
     return [{
       source: "/:path*",
