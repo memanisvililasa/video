@@ -392,9 +392,10 @@ export function createPostgresJobLeaseQueue(
       `
         UPDATE media_jobs
         SET status = 'cancelled',
-            completed_at = statement_timestamp(),
-            expires_at = statement_timestamp() + ($3::bigint * interval '1 millisecond'),
-            cancellation_requested_at = statement_timestamp(),
+            completed_at = GREATEST(statement_timestamp(), COALESCE(started_at, created_at)),
+            expires_at = GREATEST(statement_timestamp(), COALESCE(started_at, created_at))
+              + ($3::bigint * interval '1 millisecond'),
+            cancellation_requested_at = GREATEST(statement_timestamp(), created_at),
             final_result_metadata = NULL,
             canonical_error = $2::jsonb,
             lease_owner = NULL,

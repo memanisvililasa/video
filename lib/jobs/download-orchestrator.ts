@@ -27,7 +27,6 @@ import type {
   MediaJobResult,
   MediaJobSnapshot
 } from "@/lib/jobs/types";
-import { mediaJobRuntime } from "@/lib/jobs/queue";
 import type { MediaJobRuntime } from "@/lib/jobs/runtime";
 import { cleanupExpiredFiles, type CleanupExpiredFilesOptions } from "@/lib/storage/cleanup";
 import {
@@ -302,7 +301,7 @@ export function createDownloadOrchestrationService(
 }
 
 export function createDefaultDownloadOrchestrationService(
-  jobs: MediaJobRuntime = mediaJobRuntime
+  jobs: MediaJobRuntime
 ): DownloadOrchestrationService {
   const maxFileSizeBytes = Math.max(1, Math.floor(env.maxFileSizeMb * 1024 * 1024));
   return createDownloadOrchestrationService({

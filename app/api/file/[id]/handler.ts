@@ -4,9 +4,11 @@ import { Readable } from "node:stream";
 import { API_ERROR_CODES, API_ERROR_STATUS, createApiErrorResponse } from "@/lib/errors";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import type { DeliverableMediaFile } from "@/lib/storage/file-delivery";
+import type { RateLimitKeyInput, RateLimitResult } from "@/lib/security/rate-limit";
 
 export type FileDeliveryRouteDependencies = Readonly<{
   getFile: (fileId: string) => Promise<DeliverableMediaFile | null>;
+  checkRateLimit?: (input: RateLimitKeyInput) => RateLimitResult;
 }>;
 
 function errorResponse(code: keyof typeof API_ERROR_CODES, message?: string, status = API_ERROR_STATUS[code]) {
@@ -18,13 +20,14 @@ function isValidFileId(id: string): boolean {
 }
 
 export function createFileDeliveryRouteHandler(dependencies: FileDeliveryRouteDependencies) {
+  const rateLimit = dependencies.checkRateLimit ?? checkRateLimit;
   return async function GET(request: NextRequest, context: { params: Promise<{ id: string }> }) {
     try {
-      const rateLimit = checkRateLimit({ bucket: "file", headers: request.headers });
-      if (!rateLimit.ok) {
-        return NextResponse.json(createApiErrorResponse(rateLimit.code, rateLimit.message, rateLimit.error.details), {
+      const rateLimitResult = rateLimit({ bucket: "file", headers: request.headers });
+      if (!rateLimitResult.ok) {
+        return NextResponse.json(createApiErrorResponse(rateLimitResult.code, rateLimitResult.message, rateLimitResult.error.details), {
           status: 429,
-          headers: { "Retry-After": String(rateLimit.retryAfterSeconds) }
+          headers: { "Retry-After": String(rateLimitResult.retryAfterSeconds) }
         });
       }
 

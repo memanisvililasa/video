@@ -171,6 +171,17 @@ export async function migrationStatus(options) {
 async function main() {
   const command = process.argv[2];
   const useTestDatabase = process.argv[3] === "--test";
+  const production = process.env.NODE_ENV?.trim() === "production";
+  const role = process.env.APP_PROCESS_ROLE?.trim();
+  if (production && role !== "migration") {
+    throw new TypeError("APP_PROCESS_ROLE must be exactly 'migration' for production migrations.");
+  }
+  if (role && role !== "migration" && !(role === "local" && !production)) {
+    throw new TypeError("Only APP_PROCESS_ROLE=migration may run the migration command.");
+  }
+  if (production && useTestDatabase) {
+    throw new TypeError("Production migrations must not use TEST_DATABASE_URL.");
+  }
   if (!useTestDatabase && process.argv[3] !== undefined) {
     throw new TypeError("The only supported migration option is --test.");
   }

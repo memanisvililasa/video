@@ -20,6 +20,7 @@ import { getSharedPostgresPool } from "@/lib/jobs/postgres/pool";
 import { createPostgresJobRepository } from "@/lib/jobs/postgres/repository";
 import type { JobRepository } from "@/lib/jobs/repository";
 import { createDurableVolumeStorage } from "@/lib/storage/durable-volume";
+import { assertDurableVolumeMarker } from "@/lib/storage/durable-volume-marker";
 import type { FinalPublicationCoordinator, MediaArtifactRepository } from "@/lib/storage/media-artifact-repository";
 import { createPostgresMediaArtifactRuntime } from "@/lib/storage/postgres/artifact-repository";
 import { createMediaStorageReconciler, type MediaStorageReconciler } from "@/lib/storage/reconciliation";
@@ -226,6 +227,7 @@ export function createProductionMediaWorkerRuntime(
     }
     await postgres.readiness();
     await assertSchemaCompatible(postgres.pool);
+    await assertDurableVolumeMarker(config.storage.root);
     await volume.storage.initialize();
     await volume.health.check();
     const production = source.NODE_ENV?.trim() === "production";

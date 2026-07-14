@@ -9,6 +9,8 @@ function numberFromEnv(name: string, fallback: number): number {
 
 export type TrustProxyMode = "none";
 
+export type ApplicationProcessRole = "local" | "web" | "worker" | "migration";
+
 export type JobRepositoryBackend = "memory" | "postgres";
 
 export type PostgresSslMode = "disable" | "require";
@@ -80,6 +82,13 @@ export type MediaWorkerConfig = Readonly<{
   expiredRetentionSeconds: number;
   queue: JobQueueConfig;
   repository: Extract<JobRepositoryConfig, { backend: "postgres" }>;
+  storage: MediaStorageConfig & Readonly<{ backend: "durable-volume"; root: string }>;
+}>;
+
+export type ProductionWebConfig = Readonly<{
+  role: "web";
+  repository: Extract<JobRepositoryConfig, { backend: "postgres" }>;
+  queue: Readonly<{ activeTtlSeconds: number }>;
   storage: MediaStorageConfig & Readonly<{ backend: "durable-volume"; root: string }>;
 }>;
 
@@ -212,6 +221,34 @@ function parseStrictBoolean(name: string, value: string | undefined, fallback: b
   if (normalized === "true") return true;
   if (normalized === "false") return false;
   throw new TypeError(`${name} must be exactly 'true' or 'false'.`);
+}
+
+/**
+ * Application roles are resolved only at an explicit server/runtime boundary.
+ * A missing non-production role keeps local development convenient; production
+ * never silently selects the process-local runtime.
+ */
+export function parseApplicationProcessRole(
+  source: Readonly<Record<string, string | undefined>>
+): ApplicationProcessRole {
+  const production = source.NODE_ENV?.trim() === "production";
+  const configured = source.APP_PROCESS_ROLE?.trim();
+  if (!configured) {
+    if (production) throw new TypeError("APP_PROCESS_ROLE is required in production.");
+    return "local";
+  }
+  if (
+    configured !== "local" &&
+    configured !== "web" &&
+    configured !== "worker" &&
+    configured !== "migration"
+  ) {
+    throw new TypeError("APP_PROCESS_ROLE must be exactly 'local', 'web', 'worker', or 'migration'.");
+  }
+  if (production && configured === "local") {
+    throw new TypeError("APP_PROCESS_ROLE=local is not permitted in production.");
+  }
+  return configured;
 }
 
 function parseDatabaseUrl(value: string | undefined): string {
@@ -432,6 +469,39 @@ export function parseMediaStorageConfig(
   return config;
 }
 
+/** Strict construction boundary for the persistent production web runtime. */
+export function parseProductionWebConfig(
+  source: Readonly<Record<string, string | undefined>>
+): ProductionWebConfig {
+  if (parseApplicationProcessRole(source) !== "web") {
+    throw new TypeError("APP_PROCESS_ROLE must be exactly 'web' for the production web runtime.");
+  }
+  const repository = parseJobRepositoryConfig(source);
+  if (repository.backend !== "postgres") {
+    throw new TypeError("The production web runtime requires JOB_REPOSITORY_BACKEND=postgres.");
+  }
+  const parsedStorage = parseMediaStorageConfig(source);
+  if (parsedStorage.backend !== "durable-volume" || parsedStorage.root === null) {
+    throw new TypeError("The production web runtime requires MEDIA_STORAGE_BACKEND=durable-volume.");
+  }
+  return Object.freeze({
+    role: "web" as const,
+    repository,
+    queue: Object.freeze({
+      activeTtlSeconds: parseBoundedInteger(
+        "JOB_ACTIVE_TTL_SECONDS",
+        source.JOB_ACTIVE_TTL_SECONDS,
+        JOB_QUEUE_CONFIG_LIMITS.activeTtlSeconds
+      )
+    }),
+    storage: Object.freeze({
+      ...parsedStorage,
+      backend: "durable-volume" as const,
+      root: parsedStorage.root
+    })
+  });
+}
+
 function parseWorkerBinaryPath(
   name: "FFMPEG_PATH" | "FFPROBE_PATH",
   value: string | undefined,
@@ -455,7 +525,7 @@ function parseWorkerBinaryPath(
 export function parseMediaWorkerConfig(
   source: Readonly<Record<string, string | undefined>>
 ): MediaWorkerConfig {
-  if (source.APP_PROCESS_ROLE?.trim() !== "worker") {
+  if (parseApplicationProcessRole(source) !== "worker") {
     throw new TypeError("APP_PROCESS_ROLE must be exactly 'worker'.");
   }
   const repository = parseJobRepositoryConfig(source);

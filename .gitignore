@@ -2,6 +2,7 @@ node_modules
 .pnpm-store
 .next
 .worker-dist
+.web-readiness-dist
 out
 .env*
 !.env.example

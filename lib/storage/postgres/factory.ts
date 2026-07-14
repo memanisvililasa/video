@@ -7,6 +7,7 @@ import {
 import { getSharedPostgresPool } from "@/lib/jobs/postgres/pool";
 import type { FinalPublicationCoordinator, MediaArtifactRepository } from "@/lib/storage/media-artifact-repository";
 import { createDurableVolumeStorage, type DurableVolumeStorage } from "@/lib/storage/durable-volume";
+import { assertDurableVolumeMarker } from "@/lib/storage/durable-volume-marker";
 import { createDurableMediaFileDelivery, type MediaFileDelivery } from "@/lib/storage/file-delivery";
 import { createPostgresMediaArtifactRuntime } from "@/lib/storage/postgres/artifact-repository";
 import { createMediaStorageReconciler, type MediaStorageReconciler } from "@/lib/storage/reconciliation";
@@ -69,6 +70,7 @@ export function createExplicitDurableMediaRuntime(
     reconciler,
     async readiness() {
       await postgres.readiness();
+      await assertDurableVolumeMarker(config.root);
       await volume.storage.initialize();
       await volume.health.check();
     },

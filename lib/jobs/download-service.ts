@@ -7,13 +7,34 @@ import { cleanupExpiredFiles } from "@/lib/storage/cleanup";
 import { ensureJobDirectory, getRelativeStoragePath, savePreparedFile } from "@/lib/storage/local-storage";
 import { API_ERROR_CODES, type DownloadFile, type DownloadJob, type DownloadRequest } from "@/lib/types";
 import { validateVideoUrl } from "@/lib/security/url-validation";
-import { createDefaultDownloadOrchestrationService } from "@/lib/jobs/download-orchestrator";
+import type { DownloadOrchestrationService } from "@/lib/jobs/download-orchestrator";
+import type { CreateDownloadJobRequest } from "@/lib/api/media-job-dto";
 
-const downloadOrchestration = createDefaultDownloadOrchestrationService();
+let localOrchestrationPromise: Promise<DownloadOrchestrationService> | null = null;
 
-export const enqueueDownloadJob = downloadOrchestration.enqueueDownloadJob;
-export const getDownloadJob = downloadOrchestration.getDownloadJob;
-export const cancelDownloadJob = downloadOrchestration.cancelDownloadJob;
+function getLocalDownloadOrchestration(): Promise<DownloadOrchestrationService> {
+  if (!localOrchestrationPromise) {
+    localOrchestrationPromise = Promise.all([
+      import("@/lib/jobs/download-orchestrator"),
+      import("@/lib/jobs/queue")
+    ]).then(([orchestration, queue]) =>
+      orchestration.createDefaultDownloadOrchestrationService(queue.mediaJobRuntime)
+    );
+  }
+  return localOrchestrationPromise;
+}
+
+export async function enqueueDownloadJob(request: CreateDownloadJobRequest) {
+  return (await getLocalDownloadOrchestration()).enqueueDownloadJob(request);
+}
+
+export async function getDownloadJob(jobId: string) {
+  return (await getLocalDownloadOrchestration()).getDownloadJob(jobId);
+}
+
+export async function cancelDownloadJob(jobId: string) {
+  return (await getLocalDownloadOrchestration()).cancelDownloadJob(jobId);
+}
 
 export type PreparedDownload = {
   job: DownloadJob;

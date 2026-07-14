@@ -1,14 +1,18 @@
 import { createMediaJobRouteHandlers } from "@/app/api/jobs/[id]/handler";
 import { serializeMediaJobSnapshot } from "@/lib/api/media-job-serializer";
-import { cancelDownloadJob, getDownloadJob } from "@/lib/jobs/download-service";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { resolveWebApiRuntime } from "@/lib/web/runtime-resolver";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const handlers = createMediaJobRouteHandlers({
-  getDownloadJob,
-  cancelDownloadJob,
+  async getDownloadJob(jobId) {
+    return (await resolveWebApiRuntime()).jobs.getDownloadJob(jobId);
+  },
+  async cancelDownloadJob(jobId) {
+    return (await resolveWebApiRuntime()).jobs.cancelDownloadJob(jobId);
+  },
   serializeMediaJobSnapshot,
   checkRateLimit
 });

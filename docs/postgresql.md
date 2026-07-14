@@ -1,10 +1,10 @@
 # PostgreSQL development and testing
 
-Подэтапы 5.9.3–5.9.7 добавляют PostgreSQL implementation текущего `JobRepository`, durable queue/lease adapter, explicit Phase A shared-volume storage runtime, отдельный compiled Node worker и elected lifecycle coordination, но не выполняют production API cutover. Shared API runtime в `lib/jobs/queue.ts` остаётся in-memory, использует локальную execution queue и process-local file registry. Отдельный scheduler daemon и deployment wiring отсутствуют.
+Подэтапы 5.9.3–5.9.8A добавляют PostgreSQL implementation `JobRepository`, durable queue/lease adapter, explicit Phase A shared-volume storage runtime, отдельный compiled Node worker, elected lifecycle coordination и role-aware production web composition. `APP_PROCESS_ROLE=web` routes используют persistent enqueue/status/cancellation и PostgreSQL artifact delivery; memory queue и process-local registry остаются только local/test compatibility adapters. Deployment wiring и реальный traffic cutover отсутствуют.
 
 ## Конфигурация
 
-Явный PostgreSQL repository runtime создаётся через `createExplicitJobRepositoryRuntime`, queue runtime — через `createExplicitPostgresJobQueueRuntime`. Эти factories используют одну PostgreSQL authority и не делают fallback или dual-write. Текущий API composition root их не импортирует.
+Явный PostgreSQL repository runtime создаётся через `createExplicitJobRepositoryRuntime`, queue runtime — через `createExplicitPostgresJobQueueRuntime`. Production web boundary создаётся `createProductionWebRuntime`; один lazy per-process resolver выбирает либо полностью local runtime, либо полностью persistent web runtime и не делает fallback/dual-write.
 
 - `JOB_REPOSITORY_BACKEND=memory|postgres`, default — `memory`;
 - `DATABASE_URL` обязателен только для explicit `postgres`;
@@ -25,7 +25,7 @@ Queue/lease параметры также читаются только explicit
 
 В production разрешён только `POSTGRES_SSL_MODE=require` с проверкой сертификата (`rejectUnauthorized: true`). Значение `disable` отклоняется fail-closed. Local PostgreSQL и `TEST_DATABASE_URL` могут использовать TLS mode `disable`. URL и credentials не выводятся migration runner, repository или readiness helper.
 
-Pool создаётся лениво и не подключается при обычном импорте либо `next build`. В одном process используется один shared pool; shutdown выполняется через explicit runtime `close()`.
+Pool создаётся лениво и не подключается при обычном импорте либо `next build`. Production resolver создаёт один pool на web process; explicit test factories могут создавать независимые pools для multi-instance checks. Shutdown выполняется через runtime `close()`.
 
 ## Migrations
 
@@ -63,7 +63,7 @@ Test-only worker harness 5.9.4 остаётся узким fake-processor contra
 
 ## Phase A durable media storage
 
-Explicit runtime создаётся через `createExplicitDurableMediaRuntime`; current API route его автоматически не импортирует. Его минимальная конфигурация:
+Read-write runtime создаётся через `createExplicitDurableMediaRuntime`; production web создаёт отдельный read-only durable adapter. Минимальная конфигурация:
 
 - `MEDIA_STORAGE_BACKEND=local|durable-volume`, default `local`;
 - `MEDIA_STORAGE_ROOT` — обязательный абсолютный, заранее созданный root только для `durable-volume`;
@@ -72,11 +72,25 @@ Explicit runtime создаётся через `createExplicitDurableMediaRuntim
 - `MEDIA_STORAGE_LOW_DISK_BYTES` — fail-closed reserve threshold;
 - `MEDIA_CLEANUP_BATCH_SIZE` — 1–1000.
 
-Import и `next build` не создают directories и не требуют volume/DB. Explicit readiness проверяет regular non-symlink root, ownership, permissions, free space и PostgreSQL. В Phase A web и будущий worker должны быть non-root processes с согласованным UID/GID и монтировать один durable POSIX volume. Root не должен быть world-writable; production не fallback-ится в temp directory.
+Import и `next build` не создают directories и не требуют volume/DB. Durable root содержит regular non-writable-by-group/other marker `.videosave-volume` с точным non-secret содержимым `videosave-media-volume:v1\n`; marker provisioned out of band и никогда не создаётся runtime-ом. Web readiness проверяет root/marker/`published` только на read/execute и не пишет; worker readiness затем проверяет read-write/free-space boundary. Оба процесса монтируют один POSIX volume. Root не должен быть world-writable; production не fallback-ится в temp directory.
 
 Attempt workspace имеет server-generated layout `jobs/<job>/attempts/<attempt>/{source,partial,staged}`. Immutable final публикуется hard-link/no-overwrite в sharded `published/` namespace. Artifact сначала резервируется как `staged`, физический final создаётся, затем одна PostgreSQL transaction переводит artifact в `published` и job в `ready`; lease owner/version/attempt и PostgreSQL time проверяются под row locks. Общей filesystem/DB transaction не предполагается: elected lifecycle coordinator запускает bounded reconciler для stale staged rows, missing files и physical orphans. Отдельный scheduler daemon не добавлен.
 
-`/api/file/[id]` contract не изменён. Dependency-injected durable delivery проверяет строгий unpredictable fileId, PostgreSQL `published final`, TTL, regular non-symlink file и exact size; internal key и absolute path не выходят в response/error. Default route wiring остаётся local. Range requests и signed URLs в Phase A не добавлены.
+`/api/file/[id]` contract не изменён. Dependency-injected durable delivery проверяет строгий unpredictable fileId, PostgreSQL `published final`, TTL, regular non-symlink file и exact size; internal key и absolute path не выходят в response/error. `web` route wiring использует эту delivery, `local` — прежний registry. Range requests и signed URLs в Phase A не добавлены.
+
+## Production web role и readiness
+
+`APP_PROCESS_ROLE=web` требует PostgreSQL + durable-volume configuration. POST повторно валидирует private work item и одним queue `INSERT` сохраняет job/payload/availability/deadline; GET читает `JobRepository`; DELETE вызывает persistent cancellation; ни один из путей не создаёт process-local handler closure или worker loop. Unknown/missing production role, DB/schema/marker failure и mixed backend configuration отклоняются без memory/local fallback.
+
+```bash
+npm run build:web-readiness
+APP_PROCESS_ROLE=web JOB_REPOSITORY_BACKEND=postgres MEDIA_STORAGE_BACKEND=durable-volume npm run check:web
+TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run check:web:test
+```
+
+Production command никогда не использует `TEST_DATABASE_URL`; test command создаёт отдельную schema и temporary marked root. Readiness сверяет exact checksums `001`–`004`, required tables/columns и выполняет только read-only zero-row capability queries. Migrations по-прежнему применяются отдельной command; production migration command требует `APP_PROCESS_ROLE=migration`.
+
+Systemd/Nginx/deployment manifests и release/cutover runbook относятся к 5.9.8B, финальный rollback/cutover audit — к 5.9.8C. Этот документ не означает, что production deployment уже выполнен.
 
 Object storage и multi-host durability относятся к Phase B. Потеря controlled host/shared volume остаётся известным Phase A failure domain.
 

@@ -21,6 +21,7 @@ import { createPostgresMediaArtifactRuntime, type PostgresMediaArtifactRuntime }
 import { createExplicitDurableMediaRuntime } from "@/lib/storage/postgres/factory";
 import { createMediaStorageReconciler } from "@/lib/storage/reconciliation";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
+import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
 
 const { Client, Pool: PgPool } = pg;
 const testDatabaseUrl = process.env.TEST_DATABASE_URL?.trim();
@@ -163,6 +164,7 @@ describe("PostgreSQL durable artifact registry and shared volume", () => {
     }, { postgresSchema: schema, reconciliationGraceMs: 0 });
     await expect(access(explicitRoot)).rejects.toMatchObject({ code: "ENOENT" });
     await mkdir(explicitRoot);
+    await provisionDurableVolumeTestRoot(explicitRoot);
     await expect(runtime.readiness()).resolves.toBeUndefined();
     await runtime.close();
   });

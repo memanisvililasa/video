@@ -12,6 +12,7 @@ import { API_ERROR_CODES } from "@/lib/types";
 import { createProductionMediaWorkerRuntime, type ProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import type { MediaWorkerProcessor } from "@/lib/worker/processor";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
+import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
 
 const { Client } = pg;
 const testDatabaseUrl = process.env.TEST_DATABASE_URL?.trim();
@@ -125,6 +126,7 @@ async function enqueue(jobId: string): Promise<void> {
 
 async function createRuntime(processor?: MediaWorkerProcessor): Promise<ProductionMediaWorkerRuntime> {
   storageRoot = await mkdtemp(path.join(os.tmpdir(), "videosave-worker-integration-"));
+  await provisionDurableVolumeTestRoot(storageRoot);
   runtime = createProductionMediaWorkerRuntime(environment(storageRoot), {
     postgresSchema: schema,
     runProcess: fakeProcessRunner,

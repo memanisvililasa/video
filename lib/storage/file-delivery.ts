@@ -19,7 +19,7 @@ export interface MediaFileDelivery {
 
 export function createDurableMediaFileDelivery(options: Readonly<{
   artifacts: MediaArtifactRepository;
-  storage: MediaObjectStorage;
+  storage: Pick<MediaObjectStorage, "open">;
 }>): MediaFileDelivery {
   return Object.freeze({
     async get(fileId: string): Promise<DeliverableMediaFile | null> {

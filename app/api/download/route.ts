@@ -1,11 +1,13 @@
 import { createDownloadPostHandler } from "@/app/api/download/handler";
-import { enqueueDownloadJob } from "@/lib/jobs/download-service";
 import { checkRateLimit } from "@/lib/security/rate-limit";
+import { resolveWebApiRuntime } from "@/lib/web/runtime-resolver";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export const POST = createDownloadPostHandler({
-  enqueueDownloadJob,
+  async enqueueDownloadJob(request) {
+    return (await resolveWebApiRuntime()).jobs.enqueueDownloadJob(request);
+  },
   checkRateLimit
 });

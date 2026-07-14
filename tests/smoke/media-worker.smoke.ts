@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Extractor } from "@/lib/extractors/types";
 import { createProductionMediaWorkerRuntime, type ProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
+import { provisionDurableVolumeTestRoot } from "@/tests/helpers/durable-volume";
 
 const runFile = promisify(execFile);
 const { Client } = pg;
@@ -42,6 +43,7 @@ beforeAll(async () => {
   storageRoot = path.join(temporaryRoot, "storage");
   fixturePath = path.join(temporaryRoot, "fixture.mp4");
   await mkdir(storageRoot);
+  await provisionDurableVolumeTestRoot(storageRoot);
   await runFile("ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
     "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",

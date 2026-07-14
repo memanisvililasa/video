@@ -36,7 +36,8 @@ function validateSchema(schema: string): string {
 
 function poolConfiguration(
   config: PostgresConnectionConfig,
-  schema: string
+  schema: string,
+  applicationName: string
 ): PoolConfig {
   return {
     connectionString: config.databaseUrl,
@@ -46,9 +47,53 @@ function poolConfiguration(
     idleTimeoutMillis: config.idleTimeoutMs,
     statement_timeout: config.statementTimeoutMs,
     query_timeout: config.queryTimeoutMs,
-    application_name: "videosave-job-repository",
+    application_name: applicationName,
     options: `-c search_path=${schema}`
   };
+}
+
+export type CreatePostgresPoolOptions = Readonly<{
+  schema?: string;
+  applicationName?: string;
+}>;
+
+/**
+ * Creates an isolated lazy pool handle. Constructing the handle performs no
+ * network I/O; the first readiness/query call is the connection boundary.
+ */
+export function createPostgresPool(
+  config: PostgresConnectionConfig,
+  options: CreatePostgresPoolOptions = {}
+): SharedPostgresPool {
+  const schema = validateSchema(options.schema ?? "public");
+  const applicationName = options.applicationName ?? "videosave-job-repository";
+  if (!/^[a-z][a-z0-9_-]{0,62}$/.test(applicationName)) {
+    throw new TypeError("PostgreSQL application name is invalid.");
+  }
+  const pool = new Pool(poolConfiguration(config, schema, applicationName));
+  pool.on("error", () => undefined);
+  let closed = false;
+  return Object.freeze({
+    pool,
+    schema,
+    async readiness(): Promise<void> {
+      if (closed) throw new PostgresConnectionError("PostgreSQL pool is closed.");
+      try {
+        await pool.query("SELECT 1 AS ready");
+      } catch {
+        throw new PostgresConnectionError();
+      }
+    },
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      try {
+        await pool.end();
+      } catch {
+        throw new PostgresConnectionError("PostgreSQL pool shutdown failed.");
+      }
+    }
+  });
 }
 
 function fingerprint(config: PostgresConnectionConfig, schema: string): string {
@@ -86,32 +131,13 @@ export function getSharedPostgresPool(
     return existing.handle;
   }
 
-  const pool = new Pool(poolConfiguration(config, schema));
-  // Prevent an idle-client error from becoming an unhandled EventEmitter error.
-  // Details are deliberately not logged because they may include connection data.
-  pool.on("error", () => undefined);
-
-  let closed = false;
+  const isolated = createPostgresPool(config, { schema });
   const handle: SharedPostgresPool = Object.freeze({
-    pool,
-    schema,
-    async readiness(): Promise<void> {
-      if (closed) throw new PostgresConnectionError("PostgreSQL pool is closed.");
-      try {
-        await pool.query("SELECT 1 AS ready");
-      } catch {
-        throw new PostgresConnectionError();
-      }
-    },
+    ...isolated,
     async close(): Promise<void> {
-      if (closed) return;
-      closed = true;
+      if (poolGlobal.__videoSavePostgresPoolV1?.handle !== handle) return;
       delete poolGlobal.__videoSavePostgresPoolV1;
-      try {
-        await pool.end();
-      } catch {
-        throw new PostgresConnectionError("PostgreSQL pool shutdown failed.");
-      }
+      await isolated.close();
     }
   });
   poolGlobal.__videoSavePostgresPoolV1 = Object.freeze({ fingerprint: key, handle });
