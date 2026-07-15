@@ -1,0 +1,8 @@
+\set ON_ERROR_STOP on
+
+-- Database preparation only. Required psql identifier variables:
+--   database_name, migration_role
+-- Run from an administrative database, not inside a transaction.
+CREATE DATABASE :"database_name" OWNER :"migration_role" TEMPLATE template0;
+REVOKE CONNECT, TEMPORARY ON DATABASE :"database_name" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"database_name" TO :"migration_role";

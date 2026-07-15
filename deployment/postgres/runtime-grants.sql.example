@@ -1,0 +1,42 @@
+\set ON_ERROR_STOP on
+
+-- Run as an administrator against the application database after migrations 001-004.
+-- Required psql identifier variables: database_name, migration_role, web_role, worker_role.
+REVOKE CONNECT, TEMPORARY ON DATABASE :"database_name" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"database_name" TO :"migration_role", :"web_role", :"worker_role";
+
+ALTER ROLE :"migration_role" IN DATABASE :"database_name" SET search_path = public, pg_catalog;
+ALTER ROLE :"web_role" IN DATABASE :"database_name" SET search_path = public, pg_catalog;
+ALTER ROLE :"worker_role" IN DATABASE :"database_name" SET search_path = public, pg_catalog;
+
+ALTER SCHEMA public OWNER TO :"migration_role";
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON SCHEMA public TO :"web_role", :"worker_role";
+
+ALTER TABLE public._videosave_migrations OWNER TO :"migration_role";
+ALTER TABLE public.media_jobs OWNER TO :"migration_role";
+ALTER TABLE public.media_artifacts OWNER TO :"migration_role";
+ALTER TABLE public.media_lifecycle_state OWNER TO :"migration_role";
+
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM :"web_role", :"worker_role";
+
+GRANT SELECT ON TABLE public._videosave_migrations TO :"web_role", :"worker_role";
+GRANT SELECT, INSERT, UPDATE ON TABLE public.media_jobs TO :"web_role";
+GRANT SELECT ON TABLE public.media_artifacts TO :"web_role";
+
+GRANT SELECT, UPDATE, DELETE ON TABLE public.media_jobs TO :"worker_role";
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.media_artifacts TO :"worker_role";
+GRANT SELECT, UPDATE ON TABLE public.media_lifecycle_state TO :"worker_role";
+
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO :"migration_role";
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(bigint) TO :"migration_role";
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(integer, integer) TO :"worker_role";
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) TO :"worker_role";
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_backend_pid() TO :"worker_role";
+
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_role" IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_role" IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_role" IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_role" IN SCHEMA public GRANT SELECT ON TABLES TO :"web_role", :"worker_role";
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_role" IN SCHEMA public GRANT USAGE ON SEQUENCES TO :"web_role", :"worker_role";

@@ -12,6 +12,7 @@ import { validateOutboundHostname, validateRedirectHostname } from "@/lib/securi
 const DEFAULT_METADATA_TIMEOUT_SECONDS = 10;
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_REDIRECTS = 3;
+const MAX_RESPONSE_HEADER_BYTES = 16 * 1024;
 const USER_AGENT = "VideoSave-SafeFetcher/1.0";
 
 export type SafeHeaders = Record<string, string>;
@@ -103,17 +104,37 @@ function getRequestModule(url: URL): typeof http | typeof https {
   return url.protocol === "https:" ? https : http;
 }
 
-async function resolveSafeAddress(hostname: string): Promise<{ address: string; family: 4 | 6 }> {
+async function resolveSafeAddress(
+  hostname: string,
+  timeoutSeconds: number,
+  signal: AbortSignal
+): Promise<{ address: string; family: 4 | 6 }> {
   const outboundSafety = validateOutboundHostname(hostname);
   if (!outboundSafety.ok) {
     throw new AppError(outboundSafety.code, outboundSafety.message, 400);
   }
 
   let addresses;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort: (() => void) | undefined;
   try {
-    addresses = await lookup(outboundSafety.hostname, { all: true, verbatim: false });
+    addresses = await Promise.race([
+      lookup(outboundSafety.hostname, { all: true, verbatim: false }),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("dns-timeout")), timeoutSeconds * 1_000);
+      }),
+      new Promise<never>((_resolve, reject) => {
+        abort = () => reject(createAbortError());
+        if (signal.aborted) abort();
+        else signal.addEventListener("abort", abort, { once: true });
+      })
+    ]);
   } catch {
+    if (signal.aborted) throw createAbortError();
     throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Не удалось проверить адрес источника.", 502);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (abort) signal.removeEventListener("abort", abort);
   }
 
   if (addresses.length === 0) {
@@ -153,7 +174,7 @@ function createAbortError(): AppError {
 
 async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders, options: Required<SafeFetchOptions>): Promise<RequestResult> {
   assertSafeUrl(url);
-  const resolved = await resolveSafeAddress(url.hostname);
+  const resolved = await resolveSafeAddress(url.hostname, options.timeoutSeconds, options.signal);
 
   return new Promise<RequestResult>((resolve, reject) => {
     if (options.signal.aborted) {
@@ -182,6 +203,7 @@ async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders
 
           done(null, resolved.address, resolved.family);
         },
+        maxHeaderSize: MAX_RESPONSE_HEADER_BYTES,
         timeout: options.timeoutSeconds * 1000
       },
       (response) => {

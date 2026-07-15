@@ -15,7 +15,7 @@ describe("Phase A deployment templates", () => {
     await expect(verifyDeploymentTemplates()).resolves.toEqual({
       units: 3,
       nginx: 1,
-      postgresTemplates: 2,
+      postgresTemplates: 4,
       workflow: 1
     });
   });
@@ -49,15 +49,17 @@ describe("Phase A deployment templates", () => {
   });
 
   it("keeps PostgreSQL runtime roles non-owning and audit SQL read-only", async () => {
-    const [roles, audit] = await Promise.all([
+    const [roles, grants, audit] = await Promise.all([
       file("deployment/postgres/roles.sql.example"),
+      file("deployment/postgres/runtime-grants.sql.example"),
       file("deployment/postgres/privilege-audit.sql")
     ]);
-    expect(roles).toContain("ALTER SCHEMA public OWNER TO videosave_migration");
-    expect(roles).not.toMatch(/OWNER TO videosave_(?:web|worker)/);
-    expect(roles).not.toMatch(/GRANT\s+ALL\s+ON\s+DATABASE/i);
-    expect(roles).not.toMatch(/\bPASSWORD\b\s+['"]/i);
-    expect(roles).toContain("pg_advisory_lock(bigint) TO videosave_migration");
+    expect(roles).toContain("CREATE ROLE :\"migration_role\"");
+    expect(grants).toContain("ALTER SCHEMA public OWNER TO :\"migration_role\"");
+    expect(grants).not.toMatch(/OWNER TO :\"(?:web|worker)_role\"/);
+    expect(grants).not.toMatch(/GRANT\s+ALL\s+ON\s+DATABASE/i);
+    expect(`${roles}\n${grants}`).not.toMatch(/\bPASSWORD\b\s+['"]/i);
+    expect(grants).toContain("pg_advisory_lock(bigint) TO :\"migration_role\"");
     const normalized = audit.replace(/^--.*$/gm, "").replace(/^\\.*$/gm, "");
     expect(normalized).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|GRANT|REVOKE)\b/i);
   });
@@ -66,6 +68,8 @@ describe("Phase A deployment templates", () => {
     const workflow = await file(".github/workflows/validate.yml");
     expect(workflow).toContain("permissions:\n  contents: read");
     expect(workflow).toContain("npm run test:deployment");
+    expect(workflow).toContain("npm run verify:deployment:linux");
+    expect(workflow).not.toMatch(/uses:\s+[^@\s]+@v\d+/);
     expect(workflow).not.toMatch(/\bsystemctl\b|\bufw\b|\biptables\b|certbot/i);
     expect(workflow).not.toMatch(/^\s*DATABASE_URL\s*:/m);
     expect(workflow).not.toMatch(/^\s*deploy:\s*$/m);

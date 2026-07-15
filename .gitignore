@@ -3,6 +3,7 @@ node_modules
 .next
 .worker-dist
 .web-readiness-dist
+.cutover-readiness-dist
 .production-smoke-dist
 .release-dist
 .deployment-test-dist

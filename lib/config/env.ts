@@ -1,4 +1,8 @@
 import path from "node:path";
+import {
+  NGINX_SINGLE_HOST_LOOPBACKS,
+  TRUSTED_NGINX_CLIENT_IP_HEADER
+} from "@/lib/security/proxy-contract";
 
 function numberFromEnv(name: string, fallback: number): number {
   const value = process.env[name];
@@ -92,6 +96,12 @@ export type MediaWorkerConfig = Readonly<{
 
 export type ProductionWebConfig = Readonly<{
   role: "web";
+  ingress: Readonly<{
+    hostname: string;
+    port: number;
+    trustProxyMode: TrustProxyMode;
+    trustedIdentityHeader: typeof TRUSTED_NGINX_CLIENT_IP_HEADER;
+  }>;
   repository: Extract<JobRepositoryConfig, { backend: "postgres" }>;
   queue: Readonly<{ activeTtlSeconds: number }>;
   storage: MediaStorageConfig & Readonly<{
@@ -511,8 +521,29 @@ export function parseProductionWebConfig(
   ) {
     throw new TypeError("The production web runtime requires MEDIA_STORAGE_BACKEND=durable-volume.");
   }
+  const production = source.NODE_ENV?.trim() === "production";
+  const configuredHostname = source.HOSTNAME?.trim();
+  const hostname = configuredHostname || (production ? "" : "127.0.0.1");
+  if (!NGINX_SINGLE_HOST_LOOPBACKS.includes(hostname)) {
+    throw new TypeError("Production web HOSTNAME must be an approved loopback address.");
+  }
+  const configuredPort = source.PORT?.trim();
+  if (production && !configuredPort) {
+    throw new TypeError("PORT is required for the production web runtime.");
+  }
+  const port = parseBoundedPositiveInteger("PORT", configuredPort, 3_000, 65_535);
+  const trustProxyMode = parseTrustProxyMode(source.TRUST_PROXY_MODE);
+  if (production && trustProxyMode !== "nginx-single-host") {
+    throw new TypeError("TRUST_PROXY_MODE=nginx-single-host is required for the production web runtime.");
+  }
   return Object.freeze({
     role: "web" as const,
+    ingress: Object.freeze({
+      hostname,
+      port,
+      trustProxyMode,
+      trustedIdentityHeader: TRUSTED_NGINX_CLIENT_IP_HEADER
+    }),
     repository,
     queue: Object.freeze({
       activeTtlSeconds: parseBoundedInteger(

@@ -4,9 +4,11 @@ import {
   chmod,
   link,
   lstat,
+  mkdir,
   open,
   realpath,
   rename,
+  rmdir,
   rm,
   stat,
   statfs
@@ -144,18 +146,29 @@ function positiveInteger(value, fallback) {
 
 async function permissionCheck(root, role) {
   const published = path.join(root, "published");
+  const jobs = path.join(root, "jobs");
+  const [publishedInfo, jobsInfo] = await Promise.all([
+    lstat(published).catch(() => null),
+    lstat(jobs).catch(() => null)
+  ]);
+  if (!publishedInfo?.isDirectory() || publishedInfo.isSymbolicLink()) fail("published-unavailable");
+  if (!jobsInfo?.isDirectory() || jobsInfo.isSymbolicLink()) fail("jobs-unavailable");
   if (role === "web") {
     await access(root, constants.R_OK | constants.X_OK).catch(() => fail("web-read-denied"));
-    const publishedInfo = await lstat(published).catch(() => null);
-    if (!publishedInfo?.isDirectory() || publishedInfo.isSymbolicLink()) fail("published-unavailable");
     await access(published, constants.R_OK | constants.X_OK).catch(() => fail("web-read-denied"));
     const writable = await access(root, constants.W_OK).then(() => true, () => false);
     if (writable) fail("web-root-writable");
+    const jobsAccessible = await access(jobs, constants.R_OK | constants.X_OK).then(() => true, () => false);
+    if (jobsAccessible) fail("web-jobs-accessible");
     return;
   }
   if (role !== "worker") fail("invalid-role");
   await access(root, constants.R_OK | constants.W_OK | constants.X_OK)
     .catch(() => fail("worker-write-denied"));
+  await Promise.all([
+    access(jobs, constants.R_OK | constants.W_OK | constants.X_OK),
+    access(published, constants.R_OK | constants.W_OK | constants.X_OK)
+  ]).catch(() => fail("worker-write-denied"));
 }
 
 async function capacity(root, minimumFreeBytes) {
@@ -202,20 +215,55 @@ export async function probeDurableVolume({
   });
   if (dryRun) return Object.freeze({ ...checked, outcome: "would-probe", changed: false });
   const { root } = await canonicalVolumeRoot(rootValue);
-  const nonce = randomUUID();
-  const source = path.join(root, `.videosave-probe-${nonce}.source`);
-  const linked = path.join(root, `.videosave-probe-${nonce}.link`);
-  const renamed = path.join(root, `.videosave-probe-${nonce}.renamed`);
+  const nonce = randomUUID().replaceAll("-", "");
+  const jobs = path.join(root, "jobs");
+  const published = path.join(root, "published");
+  const workspace = path.join(jobs, `job_probe_${nonce}`);
+  const attempt = path.join(workspace, "attempts", `attempt_${nonce}`);
+  const sourceDirectory = path.join(attempt, "source");
+  const partialDirectory = path.join(attempt, "partial");
+  const stagedDirectory = path.join(attempt, "staged");
+  const publishedFirst = path.join(published, nonce.slice(0, 2));
+  const publishedSecond = path.join(publishedFirst, nonce.slice(2, 4));
+  const source = path.join(sourceDirectory, "probe-source.bin");
+  const partial = path.join(partialDirectory, "probe-partial.bin");
+  const staged = path.join(stagedDirectory, "probe-final.bin");
+  const linked = path.join(publishedSecond, `file_${nonce}.bin`);
+  const renamed = path.join(publishedSecond, `file_${nonce}.renamed`);
+  async function writeProbeFile(target, content) {
+    const file = await open(target, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    try {
+      await file.writeFile(content, "utf8");
+      await file.sync();
+    } finally {
+      await file.close().catch(() => undefined);
+    }
+  }
   let handle;
   try {
-    handle = await open(source, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+    await mkdir(sourceDirectory, { recursive: true, mode: 0o700 });
+    await mkdir(partialDirectory, { mode: 0o700 });
+    await mkdir(stagedDirectory, { mode: 0o700 });
+    await mkdir(publishedSecond, { recursive: true, mode: 0o750 });
+    await Promise.all([
+      writeProbeFile(source, "source-probe\n"),
+      writeProbeFile(partial, "partial-probe\n")
+    ]);
+    handle = await open(staged, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
     await handle.writeFile("videosave-volume-probe\n", "utf8");
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await link(source, linked);
-    await rename(source, renamed);
-    const [left, right] = await Promise.all([stat(linked), stat(renamed)]);
+    const [sourceInfo, partialInfo, stagedInfo, publishedInfo] = await Promise.all([
+      stat(sourceDirectory), stat(partialDirectory), stat(stagedDirectory), stat(publishedSecond)
+    ]);
+    if (
+      sourceInfo.dev !== stagedInfo.dev || partialInfo.dev !== stagedInfo.dev ||
+      stagedInfo.dev !== publishedInfo.dev
+    ) fail("publication-filesystem-mismatch");
+    await link(staged, linked);
+    await rename(linked, renamed);
+    const [left, right] = await Promise.all([stat(staged), stat(renamed)]);
     if (left.dev !== right.dev || left.ino !== right.ino || left.nlink < 2) fail("hardlink-probe-failed");
     return Object.freeze({ ...checked, outcome: "probed", changed: false });
   } catch (error) {
@@ -225,9 +273,19 @@ export async function probeDurableVolume({
     await handle?.close().catch(() => undefined);
     await Promise.all([
       rm(source, { force: true }),
+      rm(partial, { force: true }),
+      rm(staged, { force: true }),
       rm(linked, { force: true }),
       rm(renamed, { force: true })
     ]).catch(() => undefined);
+    await rmdir(sourceDirectory).catch(() => undefined);
+    await rmdir(partialDirectory).catch(() => undefined);
+    await rmdir(stagedDirectory).catch(() => undefined);
+    await rmdir(attempt).catch(() => undefined);
+    await rmdir(path.join(workspace, "attempts")).catch(() => undefined);
+    await rmdir(workspace).catch(() => undefined);
+    await rmdir(publishedSecond).catch(() => undefined);
+    await rmdir(publishedFirst).catch(() => undefined);
   }
 }
 

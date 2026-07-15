@@ -56,7 +56,11 @@ async function createReleaseFixture(): Promise<string> {
     write(root, ".next/static/chunks/app.js", "console.log('client');\n"),
     write(root, "worker/main.mjs", "export {};\n"),
     write(root, "checks/web-readiness.mjs", "export {};\n"),
+    write(root, "checks/cutover-readiness.mjs", "export {};\n"),
     write(root, "scripts/postgres-migrations.mjs", "export {};\n"),
+    write(root, "scripts/postgres-migration-catalog.mjs", await readFile(
+      path.join(process.cwd(), "scripts/postgres-migration-catalog.mjs"), "utf8"
+    )),
     write(root, "smoke/production-smoke.mjs", "export {};\n"),
     write(root, "tools/verify-release.mjs", "export {};\n"),
     write(root, "tools/release-contract.mjs", "export {};\n")

@@ -110,6 +110,43 @@ describe("production web readiness", () => {
     }
   });
 
+  it("rejects missing and unknown migration versions", async () => {
+    const storageRoot = await root();
+    const removed = await bootstrap.query(
+      "DELETE FROM _videosave_migrations WHERE version = '004' RETURNING version, checksum, applied_at"
+    );
+    try {
+      await expect(runProductionWebReadiness(source(storageRoot), { postgresSchema: schema }))
+        .rejects.toThrow("not compatible");
+    } finally {
+      await bootstrap.query(
+        "INSERT INTO _videosave_migrations (version, checksum, applied_at) VALUES ($1, $2, $3)",
+        [removed.rows[0].version, removed.rows[0].checksum, removed.rows[0].applied_at]
+      );
+    }
+    await bootstrap.query(
+      "INSERT INTO _videosave_migrations (version, checksum) VALUES ('999', $1)",
+      ["9".repeat(64)]
+    );
+    try {
+      await expect(runProductionWebReadiness(source(storageRoot), { postgresSchema: schema }))
+        .rejects.toThrow("not compatible");
+    } finally {
+      await bootstrap.query("DELETE FROM _videosave_migrations WHERE version = '999'");
+    }
+  });
+
+  it("rejects a schema that records current migrations but is missing a required index", async () => {
+    const storageRoot = await root();
+    await bootstrap.query("DROP INDEX media_jobs_status_idx");
+    try {
+      await expect(runProductionWebReadiness(source(storageRoot), { postgresSchema: schema }))
+        .rejects.toThrow("not compatible");
+    } finally {
+      await bootstrap.query("CREATE INDEX media_jobs_status_idx ON media_jobs (status)");
+    }
+  });
+
   it("rejects missing and malformed markers without creating them", async () => {
     const missing = await root(false);
     await expect(runProductionWebReadiness(source(missing), { postgresSchema: schema }))

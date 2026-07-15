@@ -28,6 +28,7 @@ async function root(): Promise<string> {
 
 async function provision(value: string): Promise<void> {
   await mkdir(path.join(value, "published"), { mode: 0o750 });
+  await mkdir(path.join(value, "jobs"), { mode: 0o750 });
   await admin.initializeVolumeMarker({ root: value, authorityId: AUTHORITY });
 }
 
@@ -94,12 +95,55 @@ describe("durable volume authority administration", () => {
       minimumFreeBytes: 1
     })).resolves.toMatchObject({ outcome: "probed", changed: false });
     expect(await readdir(value)).toEqual(before);
+    expect(await readdir(path.join(value, "jobs"))).toEqual([]);
+    expect(await readdir(path.join(value, "published"))).toEqual([]);
     expect((await readdir(value)).some((name) => name.startsWith(".videosave-probe-"))).toBe(false);
+    expect((await readdir(path.join(value, "jobs"))).some((name) => name.startsWith(".videosave-probe-"))).toBe(false);
+    expect((await readdir(path.join(value, "published"))).some((name) => name.startsWith(".videosave-probe-"))).toBe(false);
+  });
+
+  it("fails closed when the authority changes or the worker boundary becomes read-only", async () => {
+    const value = await root();
+    await provision(value);
+    await expect(admin.checkDurableVolume({
+      root: value,
+      authorityId: "0".repeat(32),
+      role: "worker",
+      minimumFreeBytes: 1
+    })).rejects.toMatchObject({ code: "marker-incompatible" });
+
+    await chmod(path.join(value, "jobs"), 0o550);
+    await chmod(path.join(value, "published"), 0o550);
+    await chmod(value, 0o550);
+    await expect(admin.checkDurableVolume({
+      root: value,
+      authorityId: AUTHORITY,
+      role: "worker",
+      minimumFreeBytes: 1
+    })).rejects.toMatchObject({ code: "worker-write-denied" });
+    await chmod(value, 0o750);
+    await chmod(path.join(value, "jobs"), 0o750);
+    await chmod(path.join(value, "published"), 0o750);
+  });
+
+  it("rejects symlinked publication directories", async () => {
+    const value = await root();
+    await admin.initializeVolumeMarker({ root: value, authorityId: AUTHORITY });
+    const outsideJobs = await root();
+    await mkdir(path.join(value, "published"), { mode: 0o750 });
+    await symlink(outsideJobs, path.join(value, "jobs"));
+    await expect(admin.checkDurableVolume({
+      root: value,
+      authorityId: AUTHORITY,
+      role: "worker",
+      minimumFreeBytes: 1
+    })).rejects.toMatchObject({ code: "jobs-unavailable" });
   });
 
   it("checks the web boundary without attempting writes", async () => {
     const value = await root();
     await provision(value);
+    await chmod(path.join(value, "jobs"), 0o000);
     await chmod(path.join(value, "published"), 0o550);
     await chmod(value, 0o550);
     await expect(admin.checkDurableVolume({
@@ -108,6 +152,7 @@ describe("durable volume authority administration", () => {
       role: "web",
       minimumFreeBytes: 1
     })).resolves.toMatchObject({ outcome: "ok", role: "web" });
+    await chmod(path.join(value, "jobs"), 0o750);
   });
 
   it("rejects missing roots, missing markers, traversal and symlink roots", async () => {

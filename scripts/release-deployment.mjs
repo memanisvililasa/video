@@ -21,6 +21,7 @@ import { createGunzip } from "node:zlib";
 import {
   RELEASE_MANIFEST_SCHEMA_VERSION,
   RELEASE_MANIFEST_FILE,
+  APPROVED_NODE_VERSION,
   normalizeReleasePath,
   sha256File,
   stableJson,
@@ -28,8 +29,17 @@ import {
 } from "./release-contract.mjs";
 
 const TAR_BLOCK = 512;
-const MAX_ARCHIVE_FILE_BYTES = 32 * 1024 * 1024 * 1024;
 const RELEASE_ID = /^videosave-[A-Za-z0-9][A-Za-z0-9._-]{0,63}-[a-f0-9]{12}$/;
+const GIT_COMMIT = /^[a-f0-9]{40}$/;
+const SUPPORTED_PRODUCTION_TARGETS = new Set(["linux-x64", "linux-arm64"]);
+export const RELEASE_ARCHIVE_LIMITS = Object.freeze({
+  compressedBytes: 256 * 1024 * 1024,
+  entries: 20_000,
+  totalBytes: 1024 * 1024 * 1024,
+  fileBytes: 256 * 1024 * 1024,
+  pathBytes: 512,
+  pathDepth: 24
+});
 
 export class ReleaseDeploymentError extends Error {
   constructor(code) {
@@ -76,8 +86,32 @@ async function canonicalDirectory(value, code) {
 async function deploymentLayout(rootValue) {
   const root = await canonicalDirectory(rootValue, "deployment-root-invalid");
   const releases = await canonicalDirectory(path.join(root, "releases"), "releases-root-invalid");
+  const metadata = await canonicalDirectory(path.join(root, ".deployment"), "deployment-metadata-invalid");
   if (path.dirname(releases) !== root) fail("releases-root-invalid");
-  return Object.freeze({ root, releases, current: path.join(root, "current") });
+  if (path.dirname(metadata) !== root) fail("deployment-metadata-invalid");
+  return Object.freeze({
+    root,
+    releases,
+    metadata,
+    current: path.join(root, "current"),
+    lock: path.join(metadata, "operation.lock")
+  });
+}
+
+function archiveLimits(overrides = {}) {
+  const parsed = {};
+  for (const [name, maximum] of Object.entries(RELEASE_ARCHIVE_LIMITS)) {
+    const value = overrides[name] ?? maximum;
+    if (!Number.isSafeInteger(value) || value < 1 || value > maximum) fail("archive-limits-invalid");
+    parsed[name] = value;
+  }
+  if (parsed.fileBytes > parsed.totalBytes) fail("archive-limits-invalid");
+  return Object.freeze(parsed);
+}
+
+function expectedCommit(value) {
+  if (!GIT_COMMIT.test(value ?? "")) fail("expected-commit-invalid");
+  return value;
 }
 
 function parseOctal(buffer, start, length) {
@@ -96,12 +130,19 @@ function verifyHeaderChecksum(header) {
   if (actual !== expected) fail("archive-header-checksum-invalid");
 }
 
-function archivePath(header) {
+function archivePath(header, limits) {
   const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/s, "");
   const prefix = header.subarray(345, 500).toString("utf8").replace(/\0.*$/s, "");
   try {
-    return normalizeReleasePath(prefix ? `${prefix}/${name}` : name);
-  } catch {
+    const relative = normalizeReleasePath(prefix ? `${prefix}/${name}` : name);
+    if (
+      Buffer.byteLength(relative) > limits.pathBytes ||
+      relative.split("/").length > limits.pathDepth ||
+      relative.split("/").some((part) => Buffer.byteLength(part) > 255)
+    ) fail("archive-path-limit");
+    return relative;
+  } catch (error) {
+    if (error instanceof ReleaseDeploymentError) throw error;
     fail("archive-path-invalid");
   }
 }
@@ -113,8 +154,12 @@ function contained(root, relative) {
   return resolved;
 }
 
-async function extractVerifiedUstarGzip(archive, destination) {
+async function extractVerifiedUstarGzip(archive, destination, configuredLimits = {}) {
+  const limits = archiveLimits(configuredLimits);
   const seen = new Set();
+  const caseFolded = new Set();
+  let totalBytes = 0;
+  let expandedBytes = 0;
   let buffer = Buffer.alloc(0);
   let current = null;
   let padding = 0;
@@ -122,6 +167,9 @@ async function extractVerifiedUstarGzip(archive, destination) {
   const stream = createReadStream(archive).pipe(createGunzip());
   try {
     for await (const chunk of stream) {
+      expandedBytes += chunk.length;
+      const streamMaximum = limits.totalBytes + (limits.entries + 4) * TAR_BLOCK;
+      if (expandedBytes > streamMaximum) fail("archive-total-size-invalid");
       buffer = Buffer.concat([buffer, chunk]);
       while (true) {
         if (current) {
@@ -158,12 +206,24 @@ async function extractVerifiedUstarGzip(archive, destination) {
         }
         if (terminalBlocks > 0) fail("archive-terminator-invalid");
         verifyHeaderChecksum(header);
+        if (
+          header.subarray(257, 263).toString("ascii") !== "ustar\0" ||
+          header.subarray(263, 265).toString("ascii") !== "00"
+        ) fail("archive-header-invalid");
         if (header[156] !== 0 && header[156] !== "0".charCodeAt(0)) fail("archive-entry-type-forbidden");
-        const relative = archivePath(header);
+        const relative = archivePath(header, limits);
         if (seen.has(relative)) fail("archive-entry-duplicate");
+        const folded = relative.normalize("NFC").toLowerCase();
+        if (caseFolded.has(folded)) fail("archive-entry-case-collision");
         seen.add(relative);
+        caseFolded.add(folded);
+        if (seen.size > limits.entries) fail("archive-entry-limit");
         const size = parseOctal(header, 124, 12);
-        if (size < 0 || size > MAX_ARCHIVE_FILE_BYTES) fail("archive-file-size-invalid");
+        if (size < 0 || size > limits.fileBytes) fail("archive-file-size-invalid");
+        totalBytes += size;
+        if (!Number.isSafeInteger(totalBytes) || totalBytes > limits.totalBytes) {
+          fail("archive-total-size-invalid");
+        }
         const target = contained(destination, relative);
         await mkdir(path.dirname(target), { recursive: true, mode: 0o755 });
         const handle = await open(target, "wx", 0o600).catch(() => fail("archive-extraction-failed"));
@@ -188,14 +248,50 @@ async function extractVerifiedUstarGzip(archive, destination) {
   }
 }
 
-async function verifyArchiveChecksum(archiveValue, checksumValue) {
+async function verifyArchiveChecksum(archiveValue, checksumValue, limits) {
   const archive = await regularFile(archiveValue, "archive-invalid");
+  if ((await lstat(archive)).size > limits.compressedBytes) fail("archive-compressed-size-invalid");
   const checksum = await regularFile(checksumValue, "archive-checksum-file-invalid");
   const content = await readFile(checksum, "utf8").catch(() => fail("archive-checksum-file-invalid"));
   const match = /^([a-f0-9]{64})  ([A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz)\n$/.exec(content);
   if (!match || match[2] !== path.basename(archive)) fail("archive-checksum-file-invalid");
   if (await sha256File(archive) !== match[1]) fail("archive-checksum-mismatch");
   return archive;
+}
+
+function assertProductionRelease(manifest, { allowNonLinuxForTests = false } = {}) {
+  if (manifest.build.sourceTreeDirty !== false) fail("dirty-release-forbidden");
+  if (manifest.build.nodeVersion !== APPROVED_NODE_VERSION) fail("release-node-version-invalid");
+  if (!SUPPORTED_PRODUCTION_TARGETS.has(manifest.build.target)) fail("release-target-invalid");
+  const currentTarget = `${process.platform}-${process.arch}`;
+  if (!allowNonLinuxForTests && (process.platform !== "linux" || currentTarget !== manifest.build.target)) {
+    fail("release-host-target-mismatch");
+  }
+  if (!allowNonLinuxForTests && process.version.replace(/^v/, "") !== APPROVED_NODE_VERSION) {
+    fail("release-node-version-invalid");
+  }
+}
+
+async function withDeploymentLock(layout, dryRun, operation) {
+  if (dryRun) return operation();
+  const token = randomUUID();
+  let handle;
+  try {
+    handle = await open(layout.lock, "wx", 0o600).catch(() => fail("deployment-lock-busy"));
+    await handle.writeFile(`${token}\n`, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await syncDirectory(layout.metadata);
+    return await operation();
+  } finally {
+    await handle?.close().catch(() => undefined);
+    const owner = await readFile(layout.lock, "utf8").catch(() => null);
+    if (owner === `${token}\n`) {
+      await rm(layout.lock, { force: true }).catch(() => undefined);
+      await syncDirectory(layout.metadata).catch(() => undefined);
+    }
+  }
 }
 
 function releaseId(manifest) {
@@ -255,46 +351,67 @@ export async function installRelease({
   archive: archiveValue,
   checksum: checksumValue,
   deploymentRoot,
-  dryRun = false
+  expectedCommit: expectedCommitValue,
+  dryRun = false,
+  archiveLimits: configuredLimits,
+  allowNonLinuxForTests = false
 }) {
-  const archive = await verifyArchiveChecksum(archiveValue, checksumValue);
+  const commit = expectedCommit(expectedCommitValue);
+  const limits = archiveLimits(configuredLimits);
   const layout = await deploymentLayout(deploymentRoot);
-  const staging = dryRun
-    ? await realpath(await mkdtemp(path.join(os.tmpdir(), "videosave-release-dry-run-")))
-    : path.join(layout.releases, `.install-${randomUUID()}`);
-  if (!dryRun) await mkdir(staging, { mode: 0o700 });
-  try {
-    await extractVerifiedUstarGzip(archive, staging);
-    const { manifest } = await verifyReleaseRoot(staging);
-    if (manifest.build.sourceTreeDirty !== false) fail("dirty-release-forbidden");
-    const id = releaseId(manifest);
-    const target = contained(layout.releases, id);
-    if (await lstat(target).then(() => true, () => false)) fail("release-already-installed");
-    if (dryRun) return Object.freeze({ outcome: "would-install", releaseId: id, changed: false });
-    await makeReadonly(staging);
-    await assertReadonly(staging);
-    await rename(staging, target).catch((error) => {
-      if (error?.code === "EEXIST" || error?.code === "ENOTEMPTY") fail("release-already-installed");
-      fail("release-install-rename-failed");
-    });
-    await syncDirectory(layout.releases);
-    return Object.freeze({ outcome: "installed", releaseId: id, changed: true });
-  } finally {
-    await rm(staging, { recursive: true, force: true }).catch(() => undefined);
-  }
+  return withDeploymentLock(layout, dryRun, async () => {
+    const archive = await verifyArchiveChecksum(archiveValue, checksumValue, limits);
+    const staging = dryRun
+      ? await realpath(await mkdtemp(path.join(os.tmpdir(), "videosave-release-dry-run-")))
+      : path.join(layout.releases, `.install-${randomUUID()}`);
+    if (!dryRun) await mkdir(staging, { mode: 0o700 });
+    try {
+      await extractVerifiedUstarGzip(archive, staging, limits);
+      const { manifest } = await verifyReleaseRoot(staging, {
+        expectedTarget: allowNonLinuxForTests ? "linux-x64" : `${process.platform}-${process.arch}`
+      });
+      assertProductionRelease(manifest, { allowNonLinuxForTests });
+      if (manifest.build.gitCommit !== commit) fail("release-commit-mismatch");
+      const id = releaseId(manifest);
+      const target = contained(layout.releases, id);
+      if (await lstat(target).then(() => true, () => false)) fail("release-already-installed");
+      if (dryRun) return Object.freeze({ outcome: "would-install", releaseId: id, changed: false });
+      await makeReadonly(staging);
+      await assertReadonly(staging);
+      await rename(staging, target).catch((error) => {
+        if (error?.code === "EEXIST" || error?.code === "ENOTEMPTY") fail("release-already-installed");
+        fail("release-install-rename-failed");
+      });
+      await syncDirectory(layout.releases);
+      return Object.freeze({ outcome: "installed", releaseId: id, changed: true });
+    } finally {
+      await rm(staging, { recursive: true, force: true }).catch(() => undefined);
+    }
+  });
 }
 
-export async function inspectInstalledRelease({ deploymentRoot, releaseId: requestedId }) {
+export async function inspectInstalledRelease({
+  deploymentRoot,
+  releaseId: requestedId,
+  expectedCommit: expectedCommitValue,
+  allowNonLinuxForTests = false
+}) {
   if (!RELEASE_ID.test(requestedId ?? "")) fail("release-id-invalid");
   const layout = await deploymentLayout(deploymentRoot);
   const target = contained(layout.releases, requestedId);
   const canonical = await canonicalDirectory(target, "installed-release-invalid");
   if (path.dirname(canonical) !== layout.releases) fail("installed-release-invalid");
-  const { manifest } = await verifyReleaseRoot(canonical);
+  const { manifest } = await verifyReleaseRoot(canonical, {
+    expectedTarget: allowNonLinuxForTests ? "linux-x64" : `${process.platform}-${process.arch}`
+  });
+  assertProductionRelease(manifest, { allowNonLinuxForTests });
   if (releaseId(manifest) !== requestedId || manifest.build.sourceTreeDirty !== false) {
     fail("installed-release-invalid");
   }
   await assertReadonly(canonical);
+  if (expectedCommitValue !== undefined && manifest.build.gitCommit !== expectedCommit(expectedCommitValue)) {
+    fail("release-commit-mismatch");
+  }
   return Object.freeze({ releaseId: requestedId, manifest });
 }
 
@@ -315,45 +432,55 @@ async function currentRelease(layout) {
 export async function promoteRelease({
   deploymentRoot,
   releaseId: requestedId,
+  expectedCommit: expectedCommitValue,
   confirm = false,
-  dryRun = false
+  dryRun = false,
+  allowNonLinuxForTests = false
 }) {
-  const inspected = await inspectInstalledRelease({ deploymentRoot, releaseId: requestedId });
+  const commit = expectedCommit(expectedCommitValue);
   const layout = await deploymentLayout(deploymentRoot);
-  const previousReleaseId = await currentRelease(layout);
-  if (!confirm && !dryRun) fail("promotion-confirmation-required");
-  if (previousReleaseId === inspected.releaseId) {
+  return withDeploymentLock(layout, dryRun, async () => {
+    const inspected = await inspectInstalledRelease({
+      deploymentRoot,
+      releaseId: requestedId,
+      expectedCommit: commit,
+      allowNonLinuxForTests
+    });
+    const previousReleaseId = await currentRelease(layout);
+    if (!confirm && !dryRun) fail("promotion-confirmation-required");
+    if (previousReleaseId === inspected.releaseId) {
+      return Object.freeze({
+        outcome: "already-current",
+        previousReleaseId,
+        currentReleaseId: inspected.releaseId,
+        changed: false
+      });
+    }
+    if (dryRun) {
+      return Object.freeze({
+        outcome: "would-promote",
+        previousReleaseId,
+        currentReleaseId: inspected.releaseId,
+        changed: false
+      });
+    }
+    const temporary = path.join(layout.root, `.current-${randomUUID()}`);
+    try {
+      await symlink(path.join("releases", inspected.releaseId), temporary);
+      await rename(temporary, layout.current);
+      await syncDirectory(layout.root);
+    } catch (error) {
+      if (error instanceof ReleaseDeploymentError) throw error;
+      fail("promotion-failed");
+    } finally {
+      await rm(temporary, { force: true }).catch(() => undefined);
+    }
     return Object.freeze({
-      outcome: "already-current",
+      outcome: "promoted",
       previousReleaseId,
       currentReleaseId: inspected.releaseId,
-      changed: false
+      changed: true
     });
-  }
-  if (dryRun) {
-    return Object.freeze({
-      outcome: "would-promote",
-      previousReleaseId,
-      currentReleaseId: inspected.releaseId,
-      changed: false
-    });
-  }
-  const temporary = path.join(layout.root, `.current-${randomUUID()}`);
-  try {
-    await symlink(path.join("releases", inspected.releaseId), temporary);
-    await rename(temporary, layout.current);
-    await syncDirectory(layout.root);
-  } catch (error) {
-    if (error instanceof ReleaseDeploymentError) throw error;
-    fail("promotion-failed");
-  } finally {
-    await rm(temporary, { force: true }).catch(() => undefined);
-  }
-  return Object.freeze({
-    outcome: "promoted",
-    previousReleaseId,
-    currentReleaseId: inspected.releaseId,
-    changed: true
   });
 }
 
@@ -371,11 +498,20 @@ function compatibilityProjection(manifest) {
   });
 }
 
-export async function checkRollbackCompatibility({ deploymentRoot, fromReleaseId, toReleaseId }) {
+export async function checkRollbackCompatibility({
+  deploymentRoot,
+  fromReleaseId,
+  toReleaseId,
+  fromCommit,
+  toCommit,
+  allowNonLinuxForTests = false
+}) {
   let from;
   let to;
   try {
-    from = await inspectInstalledRelease({ deploymentRoot, releaseId: fromReleaseId });
+    from = await inspectInstalledRelease({
+      deploymentRoot, releaseId: fromReleaseId, expectedCommit: fromCommit, allowNonLinuxForTests
+    });
   } catch {
     return Object.freeze({
       outcome: "blocked",
@@ -385,7 +521,9 @@ export async function checkRollbackCompatibility({ deploymentRoot, fromReleaseId
     });
   }
   try {
-    to = await inspectInstalledRelease({ deploymentRoot, releaseId: toReleaseId });
+    to = await inspectInstalledRelease({
+      deploymentRoot, releaseId: toReleaseId, expectedCommit: toCommit, allowNonLinuxForTests
+    });
   } catch {
     return Object.freeze({
       outcome: "blocked",
@@ -427,7 +565,8 @@ function parseCli(argv) {
       continue;
     }
     if (!new Set([
-      "--archive", "--checksum", "--root", "--release-id", "--from", "--to"
+      "--archive", "--checksum", "--root", "--release-id", "--expected-commit",
+      "--from", "--to", "--from-commit", "--to-commit"
     ]).has(current)) fail("arguments-invalid");
     const value = rest[index + 1];
     if (!value || value.startsWith("--") || values.has(current)) fail("arguments-invalid");
@@ -443,28 +582,39 @@ async function main() {
   const deploymentRoot = values.get("--root");
   let result;
   if (command === "install") {
-    if (!values.has("--archive") || !values.has("--checksum")) fail("arguments-invalid");
+    if (!values.has("--archive") || !values.has("--checksum") || !values.has("--expected-commit")) fail("arguments-invalid");
     result = await installRelease({
       archive: values.get("--archive"),
       checksum: values.get("--checksum"),
       deploymentRoot,
+      expectedCommit: values.get("--expected-commit"),
       dryRun: flags.has("--dry-run")
     });
   } else if (command === "inspect") {
-    result = await inspectInstalledRelease({ deploymentRoot, releaseId: values.get("--release-id") });
+    if (!values.has("--release-id") || !values.has("--expected-commit")) fail("arguments-invalid");
+    result = await inspectInstalledRelease({
+      deploymentRoot,
+      releaseId: values.get("--release-id"),
+      expectedCommit: values.get("--expected-commit")
+    });
     result = { outcome: "verified", releaseId: result.releaseId };
   } else if (command === "promote") {
+    if (!values.has("--expected-commit")) fail("arguments-invalid");
     result = await promoteRelease({
       deploymentRoot,
       releaseId: values.get("--release-id"),
+      expectedCommit: values.get("--expected-commit"),
       confirm: flags.has("--confirm"),
       dryRun: flags.has("--dry-run")
     });
   } else {
+    if (!values.has("--from-commit") || !values.has("--to-commit")) fail("arguments-invalid");
     result = await checkRollbackCompatibility({
       deploymentRoot,
       fromReleaseId: values.get("--from"),
-      toReleaseId: values.get("--to")
+      toReleaseId: values.get("--to"),
+      fromCommit: values.get("--from-commit"),
+      toCommit: values.get("--to-commit")
     });
     if (result.outcome === "blocked") process.exitCode = 2;
   }

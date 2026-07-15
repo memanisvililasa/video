@@ -1,8 +1,9 @@
 import { isIP } from "node:net";
 import { env, type TrustProxyMode } from "@/lib/config/env";
+import { TRUSTED_NGINX_CLIENT_IP_HEADER } from "@/lib/security/proxy-contract";
 
 export const UNIDENTIFIED_RATE_LIMIT_CLIENT = "unidentified";
-export const TRUSTED_NGINX_CLIENT_IP_HEADER = "x-videosave-client-ip";
+export { TRUSTED_NGINX_CLIENT_IP_HEADER } from "@/lib/security/proxy-contract";
 
 function trustedNginxClientIdentifier(headers: Headers): string {
   const candidate = headers.get(TRUSTED_NGINX_CLIENT_IP_HEADER)?.trim();

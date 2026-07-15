@@ -1,10 +1,9 @@
 \set ON_ERROR_STOP on
 
--- Read-only audit. Empty result sets indicate missing/extra privilege review;
--- this file never creates, alters, grants, revokes, or drops anything.
+-- Read-only audit. Required psql string variables: migration_role, web_role, worker_role.
 SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolconnlimit
 FROM pg_catalog.pg_roles
-WHERE rolname IN ('videosave_migration', 'videosave_web', 'videosave_worker')
+WHERE rolname IN (:'migration_role', :'web_role', :'worker_role')
 ORDER BY rolname;
 
 SELECT n.nspname AS schema_name, owner.rolname AS schema_owner
@@ -15,28 +14,17 @@ WHERE n.nspname = 'public';
 SELECT grantee, table_name, privilege_type
 FROM information_schema.role_table_grants
 WHERE table_schema = 'public'
-  AND grantee IN ('videosave_web', 'videosave_worker')
+  AND grantee IN (:'web_role', :'worker_role')
 ORDER BY grantee, table_name, privilege_type;
-
-SELECT grantee, object_type, privilege_type
-FROM information_schema.usage_privileges
-WHERE object_schema = 'public'
-  AND grantee IN ('videosave_web', 'videosave_worker')
-ORDER BY grantee, object_type, privilege_type;
-
-SELECT routine_schema, routine_name, grantee, privilege_type
-FROM information_schema.routine_privileges
-WHERE routine_schema = 'pg_catalog'
-  AND grantee IN ('videosave_migration', 'videosave_worker')
-  AND routine_name IN (
-    'pg_advisory_lock',
-    'pg_advisory_unlock',
-    'pg_try_advisory_lock',
-    'pg_backend_pid'
-  )
-ORDER BY grantee, routine_name, privilege_type;
 
 SELECT rolname, rolconfig
 FROM pg_catalog.pg_roles
-WHERE rolname IN ('videosave_migration', 'videosave_web', 'videosave_worker')
+WHERE rolname IN (:'migration_role', :'web_role', :'worker_role')
 ORDER BY rolname;
+
+SELECT member.rolname AS member_role, granted.rolname AS granted_role
+FROM pg_catalog.pg_auth_members AS membership
+JOIN pg_catalog.pg_roles AS member ON member.oid = membership.member
+JOIN pg_catalog.pg_roles AS granted ON granted.oid = membership.roleid
+WHERE member.rolname IN (:'web_role', :'worker_role')
+ORDER BY member.rolname, granted.rolname;

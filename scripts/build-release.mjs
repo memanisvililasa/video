@@ -182,6 +182,7 @@ export async function assembleRelease({
     assertRegularFile(path.join(standaloneRoot, "server.js")),
     assertRegularFile(path.join(projectRoot, ".worker-dist/main.mjs")),
     assertRegularFile(path.join(projectRoot, ".web-readiness-dist/main.mjs")),
+    assertRegularFile(path.join(projectRoot, ".cutover-readiness-dist/main.mjs")),
     assertRegularFile(path.join(projectRoot, ".production-smoke-dist/main.mjs"))
   ]);
 
@@ -214,8 +215,10 @@ export async function assembleRelease({
   await Promise.all([
     cp(path.join(projectRoot, ".worker-dist/main.mjs"), path.join(releaseRoot, "worker/main.mjs")),
     cp(path.join(projectRoot, ".web-readiness-dist/main.mjs"), path.join(releaseRoot, "checks/web-readiness.mjs")),
+    cp(path.join(projectRoot, ".cutover-readiness-dist/main.mjs"), path.join(releaseRoot, "checks/cutover-readiness.mjs")),
     cp(path.join(projectRoot, ".production-smoke-dist/main.mjs"), path.join(releaseRoot, "smoke/production-smoke.mjs")),
     cp(path.join(projectRoot, "scripts/postgres-migrations.mjs"), path.join(releaseRoot, "scripts/postgres-migrations.mjs")),
+    cp(path.join(projectRoot, "scripts/postgres-migration-catalog.mjs"), path.join(releaseRoot, "scripts/postgres-migration-catalog.mjs")),
     cp(path.join(projectRoot, "scripts/verify-release.mjs"), path.join(releaseRoot, "tools/verify-release.mjs")),
     cp(path.join(projectRoot, "scripts/release-contract.mjs"), path.join(releaseRoot, "tools/release-contract.mjs")),
     ...REQUIRED_MIGRATIONS.map((migration) => cp(
@@ -294,6 +297,7 @@ async function main() {
   });
   await run(process.execPath, [path.join(projectRoot, "scripts/build-worker.mjs")]);
   await run(process.execPath, [path.join(projectRoot, "scripts/build-web-readiness.mjs")]);
+  await run(process.execPath, [path.join(projectRoot, "scripts/build-cutover-readiness.mjs")]);
   await run(process.execPath, [path.join(projectRoot, "scripts/build-production-smoke.mjs")]);
   await assembleRelease({
     packageMetadata,

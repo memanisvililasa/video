@@ -32,6 +32,9 @@ export type ControlledEgressConfig = Readonly<{
   allowedHostname: string;
   timeoutMs?: number;
   maxBytes?: number;
+  workerConcurrency?: number;
+  source?: Readonly<Record<string, string | undefined>>;
+  postgresSchema?: string;
 }>;
 
 function boundedInteger(value: number | undefined, fallback: number, maximum: number): number {
@@ -81,12 +84,20 @@ export function validateControlledEgressConfig(input: ControlledEgressConfig) {
     source.port ||
     !/\.(?:mp4|mov|webm)$/i.test(source.pathname)
   ) throw new TypeError("Controlled-egress source URL violates the allowlist.");
+  const maxBytes = boundedInteger(input.maxBytes, DEFAULT_MAX_BYTES, 100 * 1024 * 1024);
+  if (maxBytes % (1024 * 1024) !== 0) {
+    throw new TypeError("Controlled-egress byte limit must be whole MiB.");
+  }
+  if (input.workerConcurrency !== undefined && input.workerConcurrency !== 1) {
+    throw new TypeError("Controlled-egress worker concurrency must be exactly one.");
+  }
   return Object.freeze({
     baseUrl,
     sourceUrl: source.toString(),
     allowedHostname: input.allowedHostname,
     timeoutMs: boundedInteger(input.timeoutMs, DEFAULT_TIMEOUT_MS, 10 * 60_000),
-    maxBytes: boundedInteger(input.maxBytes, DEFAULT_MAX_BYTES, 100 * 1024 * 1024)
+    maxBytes,
+    workerConcurrency: 1
   });
 }
 
@@ -365,19 +376,43 @@ export async function runNoEgressProductionSmoke(options: ProductionSmokeOptions
 }
 
 export async function runControlledEgressSmoke(
-  input: ControlledEgressConfig & Readonly<{ fetchImplementation?: typeof fetch }>
+  input: ControlledEgressConfig & Readonly<{
+    fetchImplementation?: typeof fetch;
+    createWorkerRuntime?: typeof createProductionMediaWorkerRuntime;
+  }>
 ): Promise<void> {
   const config = validateControlledEgressConfig(input);
   const fetcher = input.fetchImplementation ?? fetch;
   const deadline = Date.now() + config.timeoutMs;
+  const source = input.source ?? process.env;
+  const totalSeconds = Math.max(1, Math.floor(config.timeoutMs / 1_000));
+  const phaseSeconds = Math.max(1, Math.min(totalSeconds, 120));
+  const attemptTimeoutMs = Math.max(60_000, config.timeoutMs + 10_000);
+  const createWorker = input.createWorkerRuntime ?? createProductionMediaWorkerRuntime;
+  let runtime: ProductionMediaWorkerRuntime | null = null;
+  let running: Promise<void> | null = null;
   let jobId: string | null = null;
   try {
+    runtime = createWorker({
+      ...source,
+      WORKER_CONCURRENCY: "1",
+      WORKER_ID_PREFIX: "egress-smoke",
+      MAX_FILE_SIZE_MB: String(config.maxBytes / (1024 * 1024)),
+      DOWNLOAD_TIMEOUT_SECONDS: String(phaseSeconds),
+      FFMPEG_TIMEOUT_SECONDS: String(phaseSeconds),
+      WORKER_ATTEMPT_TIMEOUT_MS: String(attemptTimeoutMs)
+    }, { postgresSchema: input.postgresSchema });
+    await runtime.readiness();
+    running = runtime.run();
     await requestJson(fetcher, `${config.baseUrl}/api/health`, 5_000, { method: "GET" });
     jobId = await createJob(fetcher, config.baseUrl, 5_000, config.sourceUrl, "direct-source");
     const ready = await waitForStatus(fetcher, config.baseUrl, jobId, new Set(["ready"]), deadline);
     await verifyDownload(fetcher, config.baseUrl, 15_000, ready, config.maxBytes);
   } finally {
     if (jobId) await cancelJob(fetcher, config.baseUrl, 5_000, jobId).catch(() => undefined);
+    await runtime?.shutdown().catch(() => undefined);
+    await running?.catch(() => undefined);
+    await runtime?.close().catch(() => undefined);
   }
 }
 

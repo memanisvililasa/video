@@ -41,6 +41,7 @@ describe("application process roles", () => {
   it("requires an all-persistent web composition", () => {
     expect(parseProductionWebConfig(webEnvironment())).toMatchObject({
       role: "web",
+      ingress: { hostname: "127.0.0.1", port: 3000, trustProxyMode: "none" },
       repository: { backend: "postgres" },
       storage: { backend: "durable-volume", root: "/srv/videosave-media" }
     });
@@ -53,6 +54,52 @@ describe("application process roles", () => {
     expect(() => parseProductionWebConfig(webEnvironment({
       APP_PROCESS_ROLE: "worker"
     }))).toThrow("web");
+  });
+
+  it.each(["127.0.0.1", "::1", "localhost"])(
+    "accepts the approved production loopback %s",
+    (hostname) => {
+      expect(parseProductionWebConfig(webEnvironment({
+        NODE_ENV: "production",
+        POSTGRES_SSL_MODE: "require",
+        HOSTNAME: hostname,
+        PORT: "3000",
+        TRUST_PROXY_MODE: "nginx-single-host"
+      })).ingress).toMatchObject({ hostname, port: 3000, trustProxyMode: "nginx-single-host" });
+    }
+  );
+
+  it.each(["0.0.0.0", "::", "192.0.2.10", "database.internal"])(
+    "rejects production bind host %s",
+    (hostname) => {
+      expect(() => parseProductionWebConfig(webEnvironment({
+        NODE_ENV: "production",
+        POSTGRES_SSL_MODE: "require",
+        HOSTNAME: hostname,
+        PORT: "3000",
+        TRUST_PROXY_MODE: "nginx-single-host"
+      }))).toThrow("loopback");
+    }
+  );
+
+  it("requires an explicit production port and trusted Nginx mode", () => {
+    const production = {
+      NODE_ENV: "production",
+      POSTGRES_SSL_MODE: "require",
+      HOSTNAME: "127.0.0.1",
+      PORT: "3000",
+      TRUST_PROXY_MODE: "nginx-single-host"
+    };
+    expect(() => parseProductionWebConfig(webEnvironment({ ...production, PORT: undefined })))
+      .toThrow("PORT");
+    expect(() => parseProductionWebConfig(webEnvironment({
+      ...production,
+      TRUST_PROXY_MODE: undefined
+    }))).toThrow("nginx-single-host");
+    expect(() => parseProductionWebConfig(webEnvironment({
+      ...production,
+      TRUST_PROXY_MODE: "unknown"
+    }))).toThrow("TRUST_PROXY_MODE");
   });
 
   it("validates only web queue inputs and ignores worker-only settings", () => {

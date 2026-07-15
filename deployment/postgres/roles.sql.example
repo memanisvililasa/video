@@ -1,49 +1,9 @@
 \set ON_ERROR_STOP on
 
--- Run as a PostgreSQL administrator. No password is stored here: set LOGIN
--- credentials through the operator's secret-management channel afterwards.
-CREATE ROLE videosave_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 2;
-CREATE ROLE videosave_web LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 10;
-CREATE ROLE videosave_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 10;
-
--- Required psql variable: -v videosave_database='<database-name>'.
-REVOKE CONNECT, TEMPORARY ON DATABASE :"videosave_database" FROM PUBLIC;
-GRANT CONNECT ON DATABASE :"videosave_database" TO videosave_migration, videosave_web, videosave_worker;
-
-ALTER ROLE videosave_migration IN DATABASE :"videosave_database" SET search_path = public, pg_catalog;
-ALTER ROLE videosave_web IN DATABASE :"videosave_database" SET search_path = public, pg_catalog;
-ALTER ROLE videosave_worker IN DATABASE :"videosave_database" SET search_path = public, pg_catalog;
-
--- Run the remaining statements while connected to the application database,
--- after migrations 001-004 were applied by videosave_migration.
-ALTER SCHEMA public OWNER TO videosave_migration;
-REVOKE ALL ON SCHEMA public FROM PUBLIC;
-GRANT USAGE ON SCHEMA public TO videosave_web, videosave_worker;
-
-ALTER TABLE public._videosave_migrations OWNER TO videosave_migration;
-ALTER TABLE public.media_jobs OWNER TO videosave_migration;
-ALTER TABLE public.media_artifacts OWNER TO videosave_migration;
-ALTER TABLE public.media_lifecycle_state OWNER TO videosave_migration;
-
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
-REVOKE ALL ON ALL TABLES IN SCHEMA public FROM videosave_web, videosave_worker;
-
-GRANT SELECT ON TABLE public._videosave_migrations TO videosave_web, videosave_worker;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.media_jobs TO videosave_web;
-GRANT SELECT ON TABLE public.media_artifacts TO videosave_web;
-
-GRANT SELECT, UPDATE, DELETE ON TABLE public.media_jobs TO videosave_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.media_artifacts TO videosave_worker;
-GRANT SELECT, UPDATE ON TABLE public.media_lifecycle_state TO videosave_worker;
-
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_lock(bigint) TO videosave_migration;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(bigint) TO videosave_migration;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_try_advisory_lock(integer, integer) TO videosave_worker;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_advisory_unlock(integer, integer) TO videosave_worker;
-GRANT EXECUTE ON FUNCTION pg_catalog.pg_backend_pid() TO videosave_worker;
-
--- Do not add broad default runtime grants. Every future migration must update
--- this allowlist after its actual SQL surface is reviewed.
-ALTER DEFAULT PRIVILEGES FOR ROLE videosave_migration IN SCHEMA public REVOKE ALL ON TABLES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES FOR ROLE videosave_migration IN SCHEMA public REVOKE ALL ON SEQUENCES FROM PUBLIC;
-ALTER DEFAULT PRIVILEGES FOR ROLE videosave_migration IN SCHEMA public REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+-- Cluster bootstrap only. Required psql identifier variables:
+--   migration_role, web_role, worker_role
+-- Recommended Phase A values are videosave_migration, videosave_web, videosave_worker.
+-- Passwords are assigned separately through the operator secret channel.
+CREATE ROLE :"migration_role" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 2;
+CREATE ROLE :"web_role" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 10;
+CREATE ROLE :"worker_role" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION CONNECTION LIMIT 10;

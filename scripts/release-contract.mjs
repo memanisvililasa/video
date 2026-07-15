@@ -8,6 +8,8 @@ import {
   stat
 } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { POSTGRES_MIGRATION_CATALOG } from "../scripts/postgres-migration-catalog.mjs";
 
 export const RELEASE_MANIFEST_SCHEMA_VERSION = 1;
 export const APPROVED_NODE_VERSION = "24.18.0";
@@ -15,16 +17,14 @@ export const APPROVED_NPM_VERSION = "11.6.0";
 export const RELEASE_ROOT_DIRECTORY = ".release-dist/release";
 export const RELEASE_CHECKSUMS_FILE = "checksums.sha256";
 export const RELEASE_MANIFEST_FILE = "release-manifest.json";
-export const REQUIRED_MIGRATIONS = Object.freeze([
-  Object.freeze({ version: "001", file: "001_create_media_jobs.sql" }),
-  Object.freeze({ version: "002", file: "002_add_job_queue_leases.sql" }),
-  Object.freeze({ version: "003", file: "003_add_durable_media_artifacts.sql" }),
-  Object.freeze({ version: "004", file: "004_add_job_lifecycle_coordination.sql" })
-]);
+export const REQUIRED_MIGRATIONS = Object.freeze(POSTGRES_MIGRATION_CATALOG.map(({ version, file }) =>
+  Object.freeze({ version, file })
+));
 export const REQUIRED_RUNTIME_PACKAGES = Object.freeze(["next", "pg", "react", "react-dom"]);
 export const RELEASE_ENTRYPOINTS = Object.freeze({
   web: "server.js",
   webReadiness: "checks/web-readiness.mjs",
+  cutoverReadiness: "checks/cutover-readiness.mjs",
   worker: "worker/main.mjs",
   workerReadiness: "worker/main.mjs --check",
   migration: "scripts/postgres-migrations.mjs",
@@ -75,6 +75,7 @@ const LOCAL_PATH_PATTERNS = Object.freeze([
 const TEXT_FILE = /\.(?:c?js|mjs|json|css|html|sql|txt|md|xml|map)$/i;
 const MAX_SCANNED_TEXT_BYTES = 2 * 1024 * 1024;
 const HASH_LINE = /^([a-f0-9]{64})  ([!-~]+)$/;
+const MIGRATION_CATALOG_MODULE = fileURLToPath(new URL("../scripts/postgres-migration-catalog.mjs", import.meta.url));
 
 export class ReleaseContractError extends Error {
   constructor(message) {
@@ -357,10 +358,12 @@ export async function verifyReleaseRoot(root, options = {}) {
   for (const entrypoint of [
     RELEASE_ENTRYPOINTS.web,
     RELEASE_ENTRYPOINTS.webReadiness,
+    RELEASE_ENTRYPOINTS.cutoverReadiness,
     RELEASE_ENTRYPOINTS.worker,
     RELEASE_ENTRYPOINTS.migration,
     RELEASE_ENTRYPOINTS.productionSmoke,
     RELEASE_ENTRYPOINTS.releaseVerify,
+    "scripts/postgres-migration-catalog.mjs",
     "tools/release-contract.mjs",
     RELEASE_MANIFEST_FILE,
     RELEASE_CHECKSUMS_FILE,
@@ -374,7 +377,10 @@ export async function verifyReleaseRoot(root, options = {}) {
   }
 
   const manifest = validateManifest(JSON.parse(await readFile(path.join(root, RELEASE_MANIFEST_FILE), "utf8")));
-  const currentTarget = `${process.platform}-${process.arch}`;
+  const currentTarget = options.expectedTarget ?? `${process.platform}-${process.arch}`;
+  if (!/^[a-z0-9_-]+-[a-z0-9_-]+$/i.test(currentTarget)) {
+    throw releaseError("Expected release target is invalid.");
+  }
   if (manifest.build.target !== currentTarget) {
     throw releaseError(`Release target does not match this runtime: expected ${currentTarget}.`);
   }
@@ -407,10 +413,20 @@ export async function verifyReleaseRoot(root, options = {}) {
   }
 
   const migrationByFile = new Map(manifest.migrations.map((migration) => [migration.file, migration]));
+  const catalogRecord = actualByPath.get("scripts/postgres-migration-catalog.mjs");
+  if (!catalogRecord || catalogRecord.sha256 !== await sha256File(MIGRATION_CATALOG_MODULE)) {
+    throw releaseError("Migration catalog module does not match the release verifier.");
+  }
   for (const expected of REQUIRED_MIGRATIONS) {
     const relative = `db/migrations/${expected.file}`;
     const record = actualByPath.get(relative);
-    if (!record || migrationByFile.get(expected.file)?.sha256 !== record.sha256) {
+    const catalog = POSTGRES_MIGRATION_CATALOG.find((migration) =>
+      migration.version === expected.version && migration.file === expected.file
+    );
+    if (
+      !record || !catalog || record.sha256 !== catalog.checksum ||
+      migrationByFile.get(expected.file)?.sha256 !== record.sha256
+    ) {
       throw releaseError(`Migration checksum mismatch: ${expected.version}`);
     }
   }

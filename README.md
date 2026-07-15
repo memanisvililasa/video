@@ -19,7 +19,7 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 Текущий репозиторий ещё не готов к публичному multi-user production. Phase A architecture утверждена, но реализация Stage 5.9 продолжается.
 
-PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone release относится к 5.9.8B1; systemd/Nginx, volume/release tooling и host runbook добавлены как templates в 5.9.8B2; финальный traffic cutover/rollback audit остаётся 5.9.8C. Реальный production deployment не выполнен.
+PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone release, systemd/Nginx templates, privilege/volume/release tooling и host runbook реализованы; C1 добавляет read-only cutover blocker, bounded installer/deployment lock, exact commit, real-role PostgreSQL и Linux validation gates. Финальное evidence review остаётся 5.9.8C2. Реальный production deployment не выполнен.
 
 ## Ограничения
 
@@ -52,7 +52,7 @@ corepack npm run package:release
 corepack npm run test:release
 ```
 
-Builder создаёт allowlist-only root `.release-dist/release`, затем manifest, SHA-256 checksums и после verification — deterministic tar.gz archive. В release входят Next.js standalone server/static assets, compiled worker, web readiness, migration runner и неизменённые migrations `001`–`004`. `.env*`, source/tests, media, cache, logs, source maps, Git metadata и runtime data исключены. Build не требует PostgreSQL, volume или production ENV и не запускает web, worker либо migration. Подробный contract и запуск из release root описаны в [production release note](docs/production-release.md).
+Builder создаёт allowlist-only root `.release-dist/release`, затем manifest, SHA-256 checksums и после verification — deterministic tar.gz archive. В release входят Next.js standalone server/static assets, compiled worker, web/cutover readiness, migration runner и неизменённые migrations `001`–`004`. `.env*`, source/tests, media, cache, logs, source maps, Git metadata и runtime data исключены. Build не требует PostgreSQL, volume или production ENV и не запускает web, worker либо migration. Подробный contract и запуск из release root описаны в [production release note](docs/production-release.md).
 
 ## Phase A deployment boundary (5.9.8B2)
 
@@ -86,6 +86,8 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 
 `APP_PROCESS_ROLE` поддерживает `local|web|worker|migration`. В development/test отсутствующее значение означает `local`; в production роль обязательна, а `local` отклоняется. `web` требует `JOB_REPOSITORY_BACKEND=postgres`, `DATABASE_URL`, `MEDIA_STORAGE_BACKEND=durable-volume` и заранее подготовленный shared root. PostgreSQL/volume failure завершается fail-closed: fallback и dual-write отсутствуют. Durable execution payload является private internal data и не входит в public DTO.
 
+Production web дополнительно требует explicit loopback `HOSTNAME`, `PORT` и `TRUST_PROXY_MODE=nginx-single-host`; wildcard/non-loopback bind отклоняется. Fixed proxy identity принимает только один valid IPv4/IPv6, а стандартные forwarding headers authority не являются. Local/test поведение остаётся trust-none.
+
 `MEDIA_STORAGE_BACKEND` по умолчанию равен `local` только для local/test runtime. Web и worker требуют `durable-volume`, абсолютный заранее подготовленный `MEDIA_STORAGE_ROOT`, одинаковый non-secret `MEDIA_STORAGE_AUTHORITY_ID` и PostgreSQL registry из migration `003`. Marker `.videosave-volume` содержит v2 header и authority ID; runtime его не создаёт. Web использует read-only adapter и открывает только PostgreSQL-registered `published final`, worker сохраняет read-write boundary. Internal keys, source и partial artifacts не являются public API. Object storage и signed URLs относятся к Phase B.
 
 Production web readiness собирается и запускается отдельно; она только читает DB/schema/volume и всегда закрывает pool:
@@ -96,6 +98,15 @@ TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run
 ```
 
 `check:web` использует только `DATABASE_URL` и проверяет exact migrations `001`–`004`, schema capabilities, artifact/queue surfaces и marker. Она не применяет migrations, не создаёт volume, не enqueue/claim-ит jobs. Test variant сам создаёт isolated schema и temporary marked root. Обычный `npm run build` не читает role/DB/volume: runtime разрешается лениво при server request.
+
+Перед первым cutover packaged read-only check запускается отдельно под migration environment:
+
+```bash
+APP_PROCESS_ROLE=migration npm run check:cutover
+TEST_DATABASE_URL='postgresql://<test-role>@<host>/<disposable-test-db>' npm run check:cutover:test
+```
+
+Production command никогда не использует `TEST_DATABASE_URL`. Он не применяет migrations и проверяет exact schema/history, runtime roles/grants, migration lock и cutover blockers.
 
 ### Standalone media worker
 

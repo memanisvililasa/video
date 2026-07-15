@@ -12,9 +12,16 @@ const valid = {
   maxBytes: 1_048_576
 };
 
+const fakeRuntime = {
+  readiness: async () => undefined,
+  run: async () => undefined,
+  shutdown: async () => undefined,
+  close: async () => undefined
+};
+
 describe("controlled-egress smoke configuration", () => {
   it("accepts only an explicit HTTPS source on the exact allowlisted hostname", () => {
-    expect(validateControlledEgressConfig(valid)).toEqual(valid);
+    expect(validateControlledEgressConfig(valid)).toEqual({ ...valid, workerConcurrency: 1 });
   });
 
   it.each([
@@ -26,7 +33,11 @@ describe("controlled-egress smoke configuration", () => {
     { sourceUrl: "https://fixture.example.invalid:8443/small.mp4" },
     { sourceUrl: "https://fixture.example.invalid/file.txt" },
     { allowedHostname: "*.example.invalid" },
-    { baseUrl: "file:///tmp/origin" }
+    { baseUrl: "file:///tmp/origin" },
+    { maxBytes: 1_048_577 },
+    { maxBytes: 101 * 1024 * 1024 },
+    { timeoutMs: 10 * 60_000 + 1 },
+    { workerConcurrency: 2 }
   ])("rejects unsafe configuration %#", (override) => {
     expect(() => validateControlledEgressConfig({ ...valid, ...override })).toThrow(TypeError);
   });
@@ -69,7 +80,11 @@ describe("controlled-egress smoke configuration", () => {
         data: { jobId: `job_${"a".repeat(32)}`, status: "failed", progress: 0 }
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     });
-    await expect(runControlledEgressSmoke({ ...valid, fetchImplementation: fetcher as typeof fetch }))
+    await expect(runControlledEgressSmoke({
+      ...valid,
+      fetchImplementation: fetcher as typeof fetch,
+      createWorkerRuntime: () => fakeRuntime as never
+    }))
       .rejects.toThrow("unexpected terminal");
     for (const init of requests) {
       const headers = new Headers(init.headers);

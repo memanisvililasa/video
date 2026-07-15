@@ -172,6 +172,24 @@ afterAll(async () => {
 });
 
 describe("standalone media worker with PostgreSQL and durable volume", () => {
+  it("uses the exact shared migration checksum contract", async () => {
+    const original = await bootstrap.query(
+      "SELECT checksum FROM _videosave_migrations WHERE version = '004'"
+    );
+    await bootstrap.query(
+      "UPDATE _videosave_migrations SET checksum = $1 WHERE version = '004'",
+      ["0".repeat(64)]
+    );
+    try {
+      await expect(createRuntime()).rejects.toThrow("not compatible");
+    } finally {
+      await bootstrap.query(
+        "UPDATE _videosave_migrations SET checksum = $1 WHERE version = '004'",
+        [original.rows[0].checksum]
+      );
+    }
+  });
+
   it("claims, processes, publishes and exposes a ready final across adapter instances", async () => {
     const current = await createRuntime();
     await enqueue("job_worker_ready");

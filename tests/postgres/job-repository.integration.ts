@@ -21,6 +21,7 @@ import {
   createPostgresMediaLifecycleElection
 } from "@/lib/jobs/postgres/lifecycle-maintenance";
 import { getSharedPostgresPool } from "@/lib/jobs/postgres/pool";
+import { MIGRATION_ADVISORY_LOCK_KEY } from "@/lib/jobs/postgres/cutover-readiness";
 import {
   createPostgresJobRepository,
   PostgresJobRepositoryError
@@ -199,6 +200,75 @@ runJobRepositoryContract("postgres", () => ({
 }));
 
 describe("PostgreSQL migrations and schema", () => {
+  it("does not create a missing schema while reporting migration status", async () => {
+    const missingSchema = `${schema}_status_missing`;
+    await expect(migrationStatus({
+      connectionString: testDatabaseUrl,
+      sslMode: "disable",
+      nodeEnv: "test",
+      schema: missingSchema
+    })).resolves.toEqual([
+      { version: "001", status: "pending" },
+      { version: "002", status: "pending" },
+      { version: "003", status: "pending" },
+      { version: "004", status: "pending" }
+    ]);
+    await expect(bootstrapClient.query(
+      "SELECT count(*)::int AS count FROM pg_catalog.pg_namespace WHERE nspname = $1",
+      [missingSchema]
+    )).resolves.toMatchObject({ rows: [{ count: 0 }] });
+  });
+
+  it("keeps status strictly read-only on a pristine schema", async () => {
+    const statusSchema = `${schema}_readonly_status`;
+    const quotedStatusSchema = `"${statusSchema}"`;
+    await bootstrapClient.query(`CREATE SCHEMA ${quotedStatusSchema}`);
+    try {
+      const before = await bootstrapClient.query(
+        "SELECT count(*)::int AS count FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace WHERE n.nspname = $1",
+        [statusSchema]
+      );
+      const searchPathBefore = await bootstrapClient.query("SHOW search_path");
+      const locksBefore = await bootstrapClient.query(
+        `SELECT count(*)::int AS count
+         FROM pg_catalog.pg_locks
+         WHERE locktype = 'advisory' AND granted AND objsubid = 1
+           AND ((classid::bigint << 32) | objid::bigint) = $1::bigint`,
+        [MIGRATION_ADVISORY_LOCK_KEY.toString()]
+      );
+      await expect(migrationStatus({
+        connectionString: testDatabaseUrl,
+        sslMode: "disable",
+        nodeEnv: "test",
+        schema: statusSchema
+      })).resolves.toEqual([
+        { version: "001", status: "pending" },
+        { version: "002", status: "pending" },
+        { version: "003", status: "pending" },
+        { version: "004", status: "pending" }
+      ]);
+      const after = await bootstrapClient.query(
+        "SELECT count(*)::int AS count FROM pg_catalog.pg_class AS c JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace WHERE n.nspname = $1",
+        [statusSchema]
+      );
+      expect(after.rows).toEqual(before.rows);
+      const locksAfter = await bootstrapClient.query(
+        `SELECT count(*)::int AS count
+         FROM pg_catalog.pg_locks
+         WHERE locktype = 'advisory' AND granted AND objsubid = 1
+           AND ((classid::bigint << 32) | objid::bigint) = $1::bigint`,
+        [MIGRATION_ADVISORY_LOCK_KEY.toString()]
+      );
+      expect(locksAfter.rows).toEqual(locksBefore.rows);
+      expect((await bootstrapClient.query("SHOW search_path")).rows).toEqual(searchPathBefore.rows);
+      expect((await bootstrapClient.query("SELECT to_regclass($1)::text AS history", [
+        `${statusSchema}._videosave_migrations`
+      ])).rows[0]).toEqual({ history: null });
+    } finally {
+      await bootstrapClient.query(`DROP SCHEMA ${quotedStatusSchema} CASCADE`);
+    }
+  });
+
   it("reports the migration as applied and a repeated apply as current", async () => {
     const options = {
       connectionString: testDatabaseUrl,
@@ -301,6 +371,39 @@ describe("PostgreSQL migrations and schema", () => {
         "UPDATE _videosave_migrations SET checksum = $1 WHERE version = $2",
         [original.rows[0].checksum, "001"]
       );
+    }
+  });
+
+  it("fails closed for missing and unknown migration history", async () => {
+    const removed = await pool.query(
+      "DELETE FROM _videosave_migrations WHERE version = '004' RETURNING version, checksum, applied_at"
+    );
+    try {
+      await expect(migrationStatus({
+        connectionString: testDatabaseUrl,
+        sslMode: "disable",
+        nodeEnv: "test",
+        schema
+      })).resolves.toContainEqual({ version: "004", status: "pending" });
+    } finally {
+      await pool.query(
+        "INSERT INTO _videosave_migrations (version, checksum, applied_at) VALUES ($1, $2, $3)",
+        [removed.rows[0].version, removed.rows[0].checksum, removed.rows[0].applied_at]
+      );
+    }
+    await pool.query(
+      "INSERT INTO _videosave_migrations (version, checksum) VALUES ('999', $1)",
+      ["9".repeat(64)]
+    );
+    try {
+      await expect(migrationStatus({
+        connectionString: testDatabaseUrl,
+        sslMode: "disable",
+        nodeEnv: "test",
+        schema
+      })).rejects.toThrow("not present");
+    } finally {
+      await pool.query("DELETE FROM _videosave_migrations WHERE version = '999'");
     }
   });
 });

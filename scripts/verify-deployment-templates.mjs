@@ -40,12 +40,14 @@ function unitContract(name, content) {
 }
 
 export async function verifyDeploymentTemplates() {
-  const [web, worker, migration, nginx, roles, audit, webEnv, workerEnv, workflow, ignore] = await Promise.all([
+  const [web, worker, migration, nginx, roles, database, grants, audit, webEnv, workerEnv, workflow, ignore] = await Promise.all([
     text("deployment/systemd/videosave-web.service"),
     text("deployment/systemd/videosave-worker.service"),
     text("deployment/systemd/videosave-migrate.service"),
     text("deployment/nginx/videosave.conf"),
     text("deployment/postgres/roles.sql.example"),
+    text("deployment/postgres/database.sql.example"),
+    text("deployment/postgres/runtime-grants.sql.example"),
     text("deployment/postgres/privilege-audit.sql"),
     text("deployment/env/web.env.example"),
     text("deployment/env/worker.env.example"),
@@ -99,7 +101,7 @@ export async function verifyDeploymentTemplates() {
   containsAll(nginx, [
     "server 127.0.0.1:3000;",
     "listen 80;",
-    "listen 443 ssl;",
+    "listen 443 ssl http2;",
     "__PUBLIC_HOSTNAME__",
     "__TLS_CERTIFICATE_FILE__",
     "__TLS_CERTIFICATE_KEY_FILE__",
@@ -126,23 +128,31 @@ export async function verifyDeploymentTemplates() {
   assert(!nginx.includes("proxy_set_header Upgrade"), "WebSocket behavior is out of scope.");
 
   containsAll(roles, [
-    "CREATE ROLE videosave_migration LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
-    "CREATE ROLE videosave_web LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
-    "CREATE ROLE videosave_worker LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
-    "ALTER SCHEMA public OWNER TO videosave_migration",
-    "GRANT SELECT, INSERT, UPDATE ON TABLE public.media_jobs TO videosave_web",
-    "GRANT SELECT ON TABLE public.media_artifacts TO videosave_web",
-    "GRANT SELECT, UPDATE, DELETE ON TABLE public.media_jobs TO videosave_worker",
-    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.media_artifacts TO videosave_worker",
-    "GRANT SELECT, UPDATE ON TABLE public.media_lifecycle_state TO videosave_worker",
-    "pg_advisory_lock(bigint) TO videosave_migration",
+    "CREATE ROLE :\"migration_role\" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
+    "CREATE ROLE :\"web_role\" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
+    "CREATE ROLE :\"worker_role\" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION"
+  ], "PostgreSQL role bootstrap");
+  containsAll(database, [
+    "CREATE DATABASE :\"database_name\" OWNER :\"migration_role\" TEMPLATE template0",
+    "REVOKE CONNECT, TEMPORARY ON DATABASE :\"database_name\" FROM PUBLIC"
+  ], "PostgreSQL database template");
+  containsAll(grants, [
+    "ALTER SCHEMA public OWNER TO :\"migration_role\"",
+    "GRANT SELECT, INSERT, UPDATE ON TABLE public.media_jobs TO :\"web_role\"",
+    "GRANT SELECT ON TABLE public.media_artifacts TO :\"web_role\"",
+    "GRANT SELECT, UPDATE, DELETE ON TABLE public.media_jobs TO :\"worker_role\"",
+    "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.media_artifacts TO :\"worker_role\"",
+    "GRANT SELECT, UPDATE ON TABLE public.media_lifecycle_state TO :\"worker_role\"",
+    "pg_advisory_lock(bigint) TO :\"migration_role\"",
     "pg_try_advisory_lock(integer, integer)",
-    "SET search_path = public, pg_catalog"
-  ], "PostgreSQL role template");
-  assert(!/\bPASSWORD\b\s+['\"]/i.test(roles), "PostgreSQL template contains a password.");
-  assert(!/postgres(?:ql)?:\/\//i.test(roles), "PostgreSQL template contains a connection string.");
-  assert(!/GRANT\s+ALL\s+ON\s+DATABASE/i.test(roles), "PostgreSQL template grants excessive database privileges.");
-  assert(!/ALTER (?:SCHEMA|TABLE).*OWNER TO videosave_(?:web|worker)/i.test(roles), "Runtime role owns schema objects.");
+    "SET search_path = public, pg_catalog",
+    "ALTER DEFAULT PRIVILEGES FOR ROLE :\"migration_role\""
+  ], "PostgreSQL runtime grants");
+  const postgresTemplates = [roles, database, grants, audit].join("\n");
+  assert(!/\bPASSWORD\b\s+['\"]/i.test(postgresTemplates), "PostgreSQL template contains a password.");
+  assert(!/postgres(?:ql)?:\/\//i.test(postgresTemplates), "PostgreSQL template contains a connection string.");
+  assert(!/GRANT\s+ALL\s+ON\s+DATABASE/i.test(postgresTemplates), "PostgreSQL template grants excessive database privileges.");
+  assert(!/ALTER (?:SCHEMA|TABLE).*OWNER TO :\"(?:web|worker)_role\"/i.test(grants), "Runtime role owns schema objects.");
   const auditStatements = audit
     .split("\n")
     .filter((line) => !line.trim().startsWith("--") && !line.trim().startsWith("\\"))
@@ -156,6 +166,7 @@ export async function verifyDeploymentTemplates() {
     containsAll(environment, ["MEDIA_STORAGE_AUTHORITY_ID=<32-lowercase-hex-authority-id>"], label);
     assert(!environment.includes("TEST_DATABASE_URL"), `${label} must not use test credentials.`);
   }
+  containsAll(webEnv, ["HOSTNAME=127.0.0.1", "TRUST_PROXY_MODE=nginx-single-host"], "web env");
 
   containsAll(workflow, [
     "permissions:\n  contents: read",
@@ -165,20 +176,32 @@ export async function verifyDeploymentTemplates() {
     "ffmpeg",
     "npm run test:deployment",
     "npm run test:postgres",
+    "npm run check:cutover:test",
     "npm run test:worker:smoke",
     "npm run build:release",
     "npm run verify:release",
-    "actions/upload-artifact@v4"
+    "npm run test:release:linux",
+    "npm run verify:deployment:linux",
+    "npm run audit:repository",
+    "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
   ], "CI workflow");
+  const actionRefs = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s#]+)/g)].map((match) => match[1]);
+  assert(actionRefs.length > 0 && actionRefs.every((ref) => /^[a-f0-9]{40}$/.test(ref)), "CI actions must use immutable SHAs.");
+  assert(!/continue-on-error:\s*true/.test(workflow), "Mandatory CI gates must not continue on error.");
   assert(!/^\s*(?:deploy|production):\s*$/m.test(workflow), "CI must not contain a production deploy job.");
   assert(!/\bsystemctl\b|\bufw\b|\biptables\b|certbot/i.test(workflow), "CI must not mutate host deployment state.");
   assert(!/^\s*DATABASE_URL\s*:/m.test(workflow), "CI must not define production DATABASE_URL.");
+  assert(!workflow.includes("${{ secrets."), "Validation CI must not interpolate repository secrets.");
+  assert(!/run:\s*[^\n]*\$\{\{\s*(?:github\.event|inputs)\b/.test(workflow),
+    "Validation CI must not interpolate untrusted event values into shell commands.");
+  assert(workflow.includes('test "$(node --version)" = "v24.18.0"') &&
+    workflow.includes('test "$(npm --version)" = "11.6.0"'), "CI must enforce the exact toolchain.");
   assert(ignore.includes(".release-dist") && ignore.includes(".production-smoke-dist"), "Generated outputs must be ignored.");
 
-  const scanned = [web, worker, migration, nginx, roles, audit, webEnv, workerEnv, workflow].join("\n");
+  const scanned = [web, worker, migration, nginx, postgresTemplates, webEnv, workerEnv, workflow].join("\n");
   assert(!/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(scanned), "Deployment templates contain key material.");
   assert(!/\/Users\/[A-Za-z0-9._-]+\//.test(scanned), "Deployment templates contain a local user path.");
-  return Object.freeze({ units: 3, nginx: 1, postgresTemplates: 2, workflow: 1 });
+  return Object.freeze({ units: 3, nginx: 1, postgresTemplates: 4, workflow: 1 });
 }
 
 const invokedAsScript = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;

@@ -2,15 +2,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
+import { POSTGRES_MIGRATION_CATALOG } from "./postgres-migration-catalog.mjs";
 
 const { Client } = pg;
 const MIGRATION_LOCK_KEY = 5_903_000_001;
-const MIGRATIONS = Object.freeze([
-  Object.freeze({ version: "001", file: "001_create_media_jobs.sql" }),
-  Object.freeze({ version: "002", file: "002_add_job_queue_leases.sql" }),
-  Object.freeze({ version: "003", file: "003_add_durable_media_artifacts.sql" }),
-  Object.freeze({ version: "004", file: "004_add_job_lifecycle_coordination.sql" })
-]);
 const MIGRATIONS_DIRECTORY = new URL("../db/migrations/", import.meta.url);
 const SAFE_SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
 
@@ -40,16 +35,20 @@ function databaseUrlFromEnvironment(useTestDatabase) {
 
 async function loadMigrations() {
   return Promise.all(
-    MIGRATIONS.map(async (migration) => {
+    POSTGRES_MIGRATION_CATALOG.map(async (migration) => {
       const url = new URL(migration.file, MIGRATIONS_DIRECTORY);
       if (fileURLToPath(url).split("/").at(-1) !== migration.file) {
         throw new TypeError("Configured migration filename is invalid.");
       }
       const sql = await readFile(url, "utf8");
+      const checksum = createHash("sha256").update(sql).digest("hex");
+      if (checksum !== migration.checksum) {
+        throw new Error(`Migration ${migration.version} checksum does not match the release catalog.`);
+      }
       return Object.freeze({
         ...migration,
         sql,
-        checksum: createHash("sha256").update(sql).digest("hex")
+        checksum
       });
     })
   );
@@ -81,6 +80,14 @@ async function appliedMigrations(client) {
     "SELECT version, checksum, applied_at FROM _videosave_migrations ORDER BY version"
   );
   return new Map(result.rows.map((row) => [row.version, row]));
+}
+
+async function historyTableExists(client, schema) {
+  const result = await client.query(
+    "SELECT to_regclass(format('%I.%I', $1::text, '_videosave_migrations'))::text AS history",
+    [schema]
+  );
+  return result.rows[0]?.history !== null;
 }
 
 function verifyChecksums(migrations, applied) {
@@ -119,6 +126,24 @@ async function withMigrationLock(options, operation) {
   }
 }
 
+async function withReadOnlyStatusClient(options, operation) {
+  const schema = safeSchema(options.schema ?? "public");
+  const client = new Client(migrationClientOptions(options));
+  let connected = false;
+  let transaction = false;
+  try {
+    await client.connect();
+    connected = true;
+    await client.query("BEGIN READ ONLY");
+    transaction = true;
+    await client.query("SELECT set_config('search_path', $1, true)", [schema]);
+    return await operation(client, schema);
+  } finally {
+    if (transaction) await client.query("ROLLBACK").catch(() => undefined);
+    if (connected) await client.end().catch(() => undefined);
+  }
+}
+
 export async function applyMigrations(options) {
   const migrations = await loadMigrations();
   return withMigrationLock(options, async (client) => {
@@ -153,9 +178,10 @@ export async function applyMigrations(options) {
 
 export async function migrationStatus(options) {
   const migrations = await loadMigrations();
-  return withMigrationLock(options, async (client) => {
-    await ensureHistoryTable(client);
-    const applied = await appliedMigrations(client);
+  return withReadOnlyStatusClient(options, async (client, schema) => {
+    const applied = await historyTableExists(client, schema)
+      ? await appliedMigrations(client)
+      : new Map();
     verifyChecksums(migrations, applied);
     return Object.freeze(
       migrations.map((migration) =>

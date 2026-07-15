@@ -1,6 +1,6 @@
 # Production release and deployment contract (5.9.8B1/B2)
 
-Этот документ описывает standalone release boundary B1. Phase A templates, installation/promotion, smoke и operator runbook добавлены в [deployment runbook](../deployment/README.md) в B2. Реальный deploy не выполнялся; полный failure tabletop остаётся 5.9.8C.
+Этот документ описывает standalone release boundary B1 с audit-driven C1 checks. Phase A templates, installation/promotion, smoke и operator runbook находятся в [deployment runbook](../deployment/README.md). Реальный deploy не выполнялся; финальное evidence review остаётся 5.9.8C2.
 
 ## Toolchain и команды
 
@@ -14,7 +14,7 @@ corepack npm run package:release
 corepack npm run test:release
 ```
 
-`build:release` вызывает Next.js standalone build, существующие compiled worker/web-readiness builds, собирает чистый allowlist-only root `.release-dist/release`, создаёт manifest/checksums, запускает verifier и только затем packaging. Отдельный `package:release` повторяет verification существующего root и пересобирает `.release-dist/videosave-<version>-<commit>.tar.gz` с отдельным SHA-256. Release outputs игнорируются Git.
+`build:release` вызывает Next.js standalone build, compiled worker/web-readiness/cutover-readiness builds, собирает чистый allowlist-only root `.release-dist/release`, создаёт manifest/checksums, запускает verifier и только затем packaging. Отдельный `package:release` повторяет verification существующего root и пересобирает `.release-dist/videosave-<version>-<commit>.tar.gz` с отдельным SHA-256. Release outputs игнорируются Git.
 
 Build не читает production role/DB/storage configuration, не соединяется с PostgreSQL, не проверяет mount, не запускает HTTP server/worker и не применяет migrations. `npm install` внутри builder отсутствует.
 
@@ -25,6 +25,7 @@ Release содержит только:
 - Next.js `output: "standalone"`, `.next/static` и `public`, если directory существует;
 - compiled worker `worker/main.mjs`;
 - read-only web readiness `checks/web-readiness.mjs`;
+- read-only exact-schema/privilege cutover check `checks/cutover-readiness.mjs`;
 - migration runner `scripts/postgres-migrations.mjs` и migrations `001`–`004`;
 - explicit operator-triggered production smoke bundle;
 - self-contained release verifier;
@@ -40,6 +41,7 @@ Release содержит только:
 ```bash
 APP_PROCESS_ROLE=web NODE_ENV=production HOSTNAME=127.0.0.1 PORT=3000 node server.js
 APP_PROCESS_ROLE=web NODE_ENV=production node checks/web-readiness.mjs
+APP_PROCESS_ROLE=migration NODE_ENV=production node checks/cutover-readiness.mjs
 APP_PROCESS_ROLE=worker NODE_ENV=production node worker/main.mjs --check
 APP_PROCESS_ROLE=worker NODE_ENV=production node worker/main.mjs
 APP_PROCESS_ROLE=migration NODE_ENV=production node scripts/postgres-migrations.mjs status
@@ -56,7 +58,9 @@ node tools/verify-release.mjs .
 
 `checksums.sha256` покрывает каждый release file кроме самого checksums file, включая manifest. Verifier пересчитывает hashes, сверяет полный manifest↔filesystem contract и обнаруживает изменение/добавление/удаление. Archive имеет отсортированные USTAR entries, fixed uid/gid/modes/mtime и gzip timestamp, затем перечитывается и сверяется с release root.
 
-Artifact platform-specific: manifest фиксирует `<platform>-<arch>`, а verifier отклоняет запуск на другой OS/architecture. Локальный macOS archive годится только для B1 contract/boot tests; Phase A production archive должен собираться approved toolchain на соответствующем Linux target. Publishable release также должен строиться из clean committed source; `sourceTreeDirty` позволяет B2 gate отклонить diagnostic dirty-worktree artifact.
+Artifact platform-specific: manifest фиксирует `<platform>-<arch>`. Production installer принимает только `linux-x64`/`linux-arm64`, exact Node/npm metadata, `sourceTreeDirty=false` и полный 40-hex expected commit; prefix match запрещён. Локальный macOS archive годится только для contract tests и production installer-ом отклоняется. Linux CI дополнительно запускает standalone web/worker/readiness/migration status из установленного read-only release без source tree.
+
+Installer до extraction проверяет companion checksum и bounded USTAR contract: число entries, compressed/uncompressed/file size, path length/depth, duplicate/case-collision, traversal, links и special files. Extraction идёт во временный sibling root, полный manifest/checksum verifier выполняется до atomic rename, а partial root удаляется при ошибке. Install/promotion используют общий atomic lock в `<deployment-root>/.deployment`; чужой/stale lock не удаляется автоматически. Promotion повторно верифицирует installed manifest и exact commit, атомарно меняет `current` и не удаляет previous release.
 
 ## Environment templates
 
