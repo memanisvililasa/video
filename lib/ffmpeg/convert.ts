@@ -164,7 +164,8 @@ function buildCompatibleMp4Arguments(
     "-filter_threads", String(threads),
     "-protocol_whitelist", "file",
     "-format_whitelist", ALLOWED_DEMUXERS,
-    "-autorotate",
+    // Autorotation is enabled by default. FFmpeg 6.x and 8.x accept different
+    // explicit boolean forms, so preserve the shared default instead.
     "-i", inputPath,
     "-map", "0:V:0",
     "-map", "0:a:0?",

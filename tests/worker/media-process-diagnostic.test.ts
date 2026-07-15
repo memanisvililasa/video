@@ -5,13 +5,13 @@ import { createSafeMediaDiagnosticRunner } from "@/tests/helpers/media-process-d
 
 describe("worker smoke media diagnostics", () => {
   it("reports only tool, failure category and exit code", async () => {
-    const sensitive = "sensitive-runtime-value";
+    const sensitive = "https://credential.example/private-input";
     const base: MediaProcessRunner = async () => {
       throw new MediaProcessError({
         tool: "ffmpeg",
         reason: "non-zero-exit",
         exitCode: 1,
-        stderr: sensitive,
+        stderr: `Option autorotate cannot be applied to ${sensitive}\n/private/runtime/output`,
         stdout: "/private/runtime/output"
       });
     };
@@ -27,5 +27,6 @@ describe("worker smoke media diagnostics", () => {
     expect(diagnostic.failure()).toBe("ffmpeg:non-zero-exit:exit-1");
     expect(diagnostic.failure()).not.toContain(sensitive);
     expect(diagnostic.failure()).not.toContain("/private/runtime");
+    expect(diagnostic.failure()).not.toContain("autorotate");
   });
 });

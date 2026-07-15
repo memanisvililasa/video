@@ -188,6 +188,7 @@ export async function verifyDeploymentTemplates() {
     "npm run build:release",
     "npm run verify:release",
     "npm run test:release:linux",
+    "npm run stage:release:artifact",
     "npm run verify:deployment:linux",
     "npm run audit:repository",
     "test \"$(git rev-parse HEAD)\" = \"$GITHUB_SHA\"",
@@ -200,6 +201,12 @@ export async function verifyDeploymentTemplates() {
     "test \"$SUPPLY_CHAIN_RESULT\" = \"success\"",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
   ], "CI workflow");
+  assert(workflow.includes("name: videosave-phase-a-release-${{ github.sha }}"),
+    "Release artifact name must bind to the exact commit.");
+  assert(workflow.includes("path: ci-release-artifact/"),
+    "Release artifacts must upload from the non-hidden allowlisted staging directory.");
+  assert(!workflow.includes(".release-dist/*.tar.gz") && !workflow.includes("include-hidden-files: true"),
+    "CI must not broadly upload hidden release output.");
   const actionRefs = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s#]+)/g)].map((match) => match[1]);
   assert(actionRefs.length > 0 && actionRefs.every((ref) => /^[a-f0-9]{40}$/.test(ref)), "CI actions must use immutable SHAs.");
   assert(!/continue-on-error:\s*true/.test(workflow), "Mandatory CI gates must not continue on error.");
@@ -217,7 +224,8 @@ export async function verifyDeploymentTemplates() {
     "Validation CI must not interpolate untrusted event values into shell commands.");
   assert(workflow.includes('test "$(node --version)" = "v24.18.0"') &&
     workflow.includes('test "$(npm --version)" = "11.6.0"'), "CI must enforce the exact toolchain.");
-  assert(ignore.includes(".release-dist") && ignore.includes(".production-smoke-dist"), "Generated outputs must be ignored.");
+  assert(ignore.includes(".release-dist") && ignore.includes("ci-release-artifact") && ignore.includes(".production-smoke-dist"),
+    "Generated outputs must be ignored.");
 
   const scanned = [web, worker, migration, nginx, postgresTemplates, webEnv, workerEnv, workflow].join("\n");
   assert(!/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(scanned), "Deployment templates contain key material.");

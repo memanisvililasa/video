@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, lstat, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -31,6 +31,44 @@ let fixturePath: string;
 let runtime: ProductionMediaWorkerRuntime | null = null;
 let mediaFailure = () => "none";
 
+type SmokeProbe = Readonly<{
+  format: Readonly<{ format_name?: string; duration?: string; size?: string }>;
+  streams: readonly Readonly<{ codec_type?: string; codec_name?: string; width?: number; height?: number }>[];
+}>;
+
+async function probeSmokeMedia(filename: string, stage: "fixture" | "output"): Promise<SmokeProbe> {
+  try {
+    const result = await runFile("ffprobe", [
+      "-v", "error",
+      "-show_entries", "stream=codec_type,codec_name,width,height",
+      "-show_entries", "format=format_name,duration,size",
+      "-of", "json",
+      filename
+    ], { timeout: 10_000, maxBuffer: 128 * 1024 });
+    return JSON.parse(result.stdout) as SmokeProbe;
+  } catch {
+    throw new Error(`Worker smoke ${stage} probe failed.`);
+  }
+}
+
+function assertSmokeMedia(
+  metadata: SmokeProbe,
+  expectedVideoCodec: string,
+  expectedAudioCodec: string
+): void {
+  const videos = metadata.streams.filter((stream) => stream.codec_type === "video");
+  const audios = metadata.streams.filter((stream) => stream.codec_type === "audio");
+  if (
+    !metadata.format.format_name?.split(",").includes("mp4") ||
+    !Number.isFinite(Number(metadata.format.duration)) || Number(metadata.format.duration) <= 0 ||
+    !Number.isSafeInteger(Number(metadata.format.size)) || Number(metadata.format.size) <= 0 ||
+    videos.length !== 1 || videos[0].codec_name !== expectedVideoCodec ||
+    audios.length !== 1 || audios[0].codec_name !== expectedAudioCodec
+  ) {
+    throw new Error("Worker smoke media contract failed.");
+  }
+}
+
 async function waitForReady(jobId: string): Promise<void> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -50,15 +88,24 @@ beforeAll(async () => {
   fixturePath = path.join(temporaryRoot, "fixture.mp4");
   await mkdir(storageRoot);
   await provisionDurableVolumeTestRoot(storageRoot);
-  await runFile("ffmpeg", [
-    "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-    "-filter_threads", "1",
-    "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
-    "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-    "-t", "1", "-c:v", "mpeg4", "-q:v", "5", "-pix_fmt", "yuv420p", "-threads", "1",
-    "-c:a", "aac", "-shortest",
-    fixturePath
-  ], { timeout: 20_000, maxBuffer: 128 * 1024 });
+  try {
+    await runFile("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+      "-filter_threads", "1",
+      "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
+      "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
+      "-t", "1", "-c:v", "mpeg4", "-q:v", "5", "-pix_fmt", "yuv420p", "-threads", "1",
+      "-c:a", "aac", "-shortest",
+      fixturePath
+    ], { timeout: 20_000, maxBuffer: 128 * 1024 });
+  } catch {
+    throw new Error("Worker smoke fixture generation failed.");
+  }
+  const fixtureInfo = await lstat(fixturePath);
+  if (!fixtureInfo.isFile() || fixtureInfo.isSymbolicLink() || fixtureInfo.size <= 0) {
+    throw new Error("Worker smoke fixture is not a regular non-empty file.");
+  }
+  assertSmokeMedia(await probeSmokeMedia(fixturePath, "fixture"), "mpeg4", "aac");
 
   bootstrap = new Client({
     connectionString: testDatabaseUrl,
@@ -172,10 +219,12 @@ describe("real ffprobe/FFmpeg worker smoke", () => {
     const verificationPath = path.join(temporaryRoot, "verified-output.mp4");
     await pipeline(opened.stream, (await import("node:fs")).createWriteStream(verificationPath, { flags: "wx" }));
     await opened.close();
-    const verified = await runFile("ffprobe", [
-      "-v", "error", "-show_entries", "format=duration", "-of", "json", verificationPath
-    ], { timeout: 10_000, maxBuffer: 128 * 1024 });
-    expect(Number(JSON.parse(verified.stdout).format.duration)).toBeGreaterThan(0);
+    const outputInfo = await lstat(verificationPath);
+    expect(outputInfo.isFile()).toBe(true);
+    expect(outputInfo.isSymbolicLink()).toBe(false);
+    expect(outputInfo.size).toBeGreaterThan(0);
+    expect(path.resolve(verificationPath)).not.toBe(path.resolve(fixturePath));
+    assertSmokeMedia(await probeSmokeMedia(verificationPath, "output"), "h264", "aac");
     expect(ready).toMatchObject({ status: "ready", progress: 100, finalMetadata: { processingPreset: "compatible-mp4" } });
     await runtime.shutdown();
     await running;

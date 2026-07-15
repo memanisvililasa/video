@@ -6,6 +6,7 @@ node_modules
 .cutover-readiness-dist
 .production-smoke-dist
 .release-dist
+ci-release-artifact
 .deployment-test-dist
 out
 .env*

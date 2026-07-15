@@ -16,6 +16,7 @@
     "build:production-smoke": "node scripts/build-production-smoke.mjs",
     "build:release": "node scripts/build-release.mjs && node scripts/package-release.mjs",
     "verify:release": "node scripts/verify-release.mjs .release-dist/release",
+    "stage:release:artifact": "node scripts/stage-release-artifact.mjs",
     "package:release": "node scripts/package-release.mjs",
     "test:release": "vitest run --project unit tests/release tests/security/rate-limit.test.ts && node scripts/test-standalone-release.mjs",
     "volume:admin": "node scripts/durable-volume-admin.mjs",

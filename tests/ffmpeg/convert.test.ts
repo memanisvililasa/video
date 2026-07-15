@@ -283,7 +283,6 @@ describe("safe compatible MP4 conversion", () => {
       "-filter_threads", "3",
       "-protocol_whitelist", "file",
       "-format_whitelist", "mov,matroska,webm",
-      "-autorotate",
       "-i", canonicalInputPath,
       "-map", "0:V:0",
       "-map", "0:a:0?",
@@ -308,6 +307,17 @@ describe("safe compatible MP4 conversion", () => {
     expect(call.args).not.toContain("0:s");
     expect(call.args).not.toContain("0:d");
     expect(call.args).not.toContain("0:t");
+  });
+
+  it("uses the cross-version default autorotation without an incompatible boolean form", async () => {
+    const harness = createHarness();
+    await harness.convert({ inputPath, outputPath });
+
+    const args = harness.processCalls[0].args;
+    const input = args.indexOf("-i");
+    expect(args).not.toContain("-autorotate");
+    expect(input).toBe(args.indexOf("-format_whitelist") + 2);
+    expect(args[input + 1]).toBe(await realpath(inputPath));
   });
 
   it("downscales landscape 4K to at most 1920x1080", async () => {
@@ -363,7 +373,7 @@ describe("safe compatible MP4 conversion", () => {
     const result = await harness.convert({ inputPath, outputPath });
 
     expect(result).toMatchObject({ targetWidth: 1080, targetHeight: 1920 });
-    expect(harness.processCalls[0].args).toContain("-autorotate");
+    expect(harness.processCalls[0].args).not.toContain("-autorotate");
   });
 
   it("caps configured encoding and filter threads at six", async () => {
@@ -443,6 +453,15 @@ describe("safe compatible MP4 conversion", () => {
     const error = await getAppError(harness.convert({ inputPath, outputPath: outsideOutputPath }));
     expect(error.code).toBe(API_ERROR_CODES.PROCESSING_FAILED);
     expect(harness.processCalls).toHaveLength(0);
+  });
+
+  it("rejects an output whose job directory does not exist", async () => {
+    const missingOutput = path.join(allowedRoot, "jobs", "missing", "compatible.mp4");
+    const harness = createHarness();
+    const error = await getAppError(harness.convert({ inputPath, outputPath: missingOutput }));
+    expect(error.code).toBe(API_ERROR_CODES.PROCESSING_FAILED);
+    expect(harness.processCalls).toHaveLength(0);
+    expect(await exists(missingOutput)).toBe(false);
   });
 
   it("rejects input and output resolving to the same file", async () => {

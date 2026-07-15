@@ -124,34 +124,43 @@ async function waitForNginx(port, child) {
   throw new Error("Nginx did not become ready.");
 }
 
-async function closeHttpServer(server) {
-  if (!server.listening) return;
-  server.closeAllConnections?.();
-  await new Promise((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve());
-  });
+async function withinTimeout(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
-async function stopChild(child, timeoutMs = 5_000) {
+async function closeHttpServer(server, timeoutMs = 5_000) {
+  if (!server.listening) return;
+  server.closeAllConnections?.();
+  const closed = new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+  await withinTimeout(closed, timeoutMs, "Upstream fixture did not stop.");
+}
+
+export async function stopChild(child, timeoutMs = 5_000) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise((resolve) => child.once("exit", resolve));
   child.kill("SIGTERM");
   try {
-    await Promise.race([
-      exited,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("Nginx did not stop gracefully.")), timeoutMs))
-    ]);
+    await withinTimeout(exited, timeoutMs, "Nginx did not stop gracefully.");
   } catch (error) {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    await Promise.race([
-      exited,
-      new Promise((resolve) => setTimeout(resolve, 1_000))
-    ]);
+    await withinTimeout(exited, 1_000, "Nginx did not stop after SIGKILL.").catch(() => undefined);
     throw error;
   }
 }
 
-export async function withUpstreamFixture(operation, createServer = createHttpServer) {
+export async function withUpstreamFixture(operation, createServer = createHttpServer, cleanupTimeoutMs = 5_000) {
   const upstream = createServer((request, response) => {
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ method: request.method, headers: request.headers }));
@@ -166,8 +175,72 @@ export async function withUpstreamFixture(operation, createServer = createHttpSe
     if (!upstreamPort) throw new Error("Upstream loopback port was not allocated.");
     return await operation(upstreamPort);
   } finally {
-    await closeHttpServer(upstream);
+    await closeHttpServer(upstream, cleanupTimeoutMs);
   }
+}
+
+export async function withNginxProcess(child, operation, stop = stopChild) {
+  let rejectSpawn;
+  const spawnFailure = new Promise((_, reject) => {
+    rejectSpawn = reject;
+    child.once("error", rejectSpawn);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(operation), spawnFailure]);
+  } finally {
+    child.off("error", rejectSpawn);
+    await stop(child);
+  }
+}
+
+function quoteNginxPath(filename) {
+  if (typeof filename !== "string" || filename.includes("\0") || /[\r\n]/.test(filename)) {
+    throw new Error("Nginx verifier path is invalid.");
+  }
+  return `"${filename.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+export async function renderNginxTestConfig(root, ports, tls) {
+  const logs = path.join(root, "logs");
+  await mkdir(logs, { recursive: true, mode: 0o700 });
+  const accessLog = path.join(logs, "access.log");
+  const errorLog = path.join(logs, "error.log");
+  const inheritedAccessLog = path.join(logs, "inherited-access.log");
+  const inheritedErrorLog = path.join(logs, "inherited-error.log");
+  let template = await readFile(path.join(projectRoot, "deployment/nginx/videosave.conf"), "utf8");
+  template = template
+    .replaceAll("__PUBLIC_HOSTNAME__", "videosave.test")
+    .replaceAll("__TLS_CERTIFICATE_FILE__", tls.certificate)
+    .replaceAll("__TLS_CERTIFICATE_KEY_FILE__", tls.key)
+    .replace("server 127.0.0.1:3000;", `server 127.0.0.1:${ports.upstream};`)
+    .replace("listen 80;", `listen 127.0.0.1:${ports.http};`)
+    .replace("listen [::]:80;", `listen [::1]:${ports.http};`)
+    .replace("listen 443 ssl http2;", `listen 127.0.0.1:${ports.https} ssl;`)
+    .replace("listen [::]:443 ssl http2;", `listen [::1]:${ports.https} ssl;`)
+    .replace(
+      "access_log /var/log/nginx/videosave-access.log videosave_main;",
+      `access_log ${quoteNginxPath(accessLog)} videosave_main;`
+    )
+    .replace(
+      "error_log /var/log/nginx/videosave-error.log warn;",
+      `error_log ${quoteNginxPath(errorLog)} warn;`
+    );
+  const config = path.join(root, "nginx.conf");
+  const content = [
+    `pid ${quoteNginxPath(path.join(root, "nginx.pid"))};`,
+    `error_log ${quoteNginxPath(inheritedErrorLog)} notice;`,
+    "events { worker_connections 64; }",
+    "http {",
+    `  access_log ${quoteNginxPath(inheritedAccessLog)};`,
+    "  default_type application/octet-stream;",
+    template,
+    "}"
+  ].join("\n");
+  if (content.includes("/var/log/nginx")) {
+    throw new Error("Nginx verifier config retained a system log path.");
+  }
+  await writeFile(config, content, { mode: 0o600 });
+  return Object.freeze({ config, content, logs });
 }
 
 async function verifyNginx(root) {
@@ -176,34 +249,16 @@ async function verifyNginx(root) {
     const httpsPort = await availablePort();
     if (!httpPort || !httpsPort) throw new Error("Loopback ports were not allocated.");
     const tls = await createCertificate(root);
-    let template = await readFile(path.join(projectRoot, "deployment/nginx/videosave.conf"), "utf8");
-    template = template
-      .replaceAll("__PUBLIC_HOSTNAME__", "videosave.test")
-      .replaceAll("__TLS_CERTIFICATE_FILE__", tls.certificate)
-      .replaceAll("__TLS_CERTIFICATE_KEY_FILE__", tls.key)
-      .replace("server 127.0.0.1:3000;", `server 127.0.0.1:${upstreamPort};`)
-      .replace("listen 80;", `listen 127.0.0.1:${httpPort};`)
-      .replace("listen [::]:80;", `listen [::1]:${httpPort};`)
-      .replace("listen 443 ssl http2;", `listen 127.0.0.1:${httpsPort} ssl;`)
-      .replace("listen [::]:443 ssl http2;", `listen [::1]:${httpsPort} ssl;`)
-      .replace("/var/log/nginx/videosave-access.log", path.join(root, "access.log"))
-      .replace("/var/log/nginx/videosave-error.log", path.join(root, "error.log"));
-    const config = path.join(root, "nginx.conf");
-    await writeFile(config, [
-      `pid ${path.join(root, "nginx.pid")};`,
-      "error_log stderr notice;",
-      "events { worker_connections 64; }",
-      "http {",
-      "  default_type application/octet-stream;",
-      template,
-      "}"
-    ].join("\n"), { mode: 0o600 });
-    let child;
-    try {
-      await run("nginx", ["-t", "-p", `${root}/`, "-c", config], { maxBuffer: 1024 * 1024 });
-      child = spawn("nginx", ["-p", `${root}/`, "-c", config, "-g", "daemon off; master_process off;"], {
-        stdio: ["ignore", "pipe", "pipe"]
-      });
+    const { config } = await renderNginxTestConfig(root, {
+      upstream: upstreamPort,
+      http: httpPort,
+      https: httpsPort
+    }, tls);
+    await run("nginx", ["-t", "-p", `${root}/`, "-c", config], { maxBuffer: 1024 * 1024 });
+    const child = spawn("nginx", ["-p", `${root}/`, "-c", config, "-g", "daemon off; master_process off;"], {
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    return withNginxProcess(child, async () => {
       await waitForNginx(httpsPort, child);
       const redirect = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
         headers: { Host: "videosave.test" },
@@ -239,9 +294,7 @@ async function verifyNginx(root) {
       }
       const file = await httpsJson(httpsPort, "GET", `/api/file/file_${"a".repeat(32)}`);
       if (file.status !== 200) throw new Error("Nginx file route streaming proxy failed.");
-    } finally {
-      await stopChild(child);
-    }
+    });
   });
 }
 

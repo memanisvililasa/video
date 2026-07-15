@@ -75,6 +75,11 @@ describe("Phase A deployment templates", () => {
     expect(workflow).not.toMatch(/\bsystemctl\b|\bufw\b|\biptables\b|certbot/i);
     expect(workflow).not.toMatch(/^\s*DATABASE_URL\s*:/m);
     expect(workflow).not.toMatch(/^\s*deploy:\s*$/m);
+    expect(workflow).toContain("npm run stage:release:artifact");
+    expect(workflow).toContain("name: videosave-phase-a-release-${{ github.sha }}");
+    expect(workflow).toContain("path: ci-release-artifact/");
+    expect(workflow).not.toContain(".release-dist/*.tar.gz");
+    expect(workflow).not.toContain("include-hidden-files: true");
   });
 
   it("runs mandatory Linux evidence independently and fails closed in acceptance", async () => {
@@ -89,6 +94,8 @@ describe("Phase A deployment templates", () => {
       expect(workflow).toContain(`test \"$${result}_RESULT\" = \"success\"`);
     }
     expect(workflow).not.toContain("continue-on-error:");
+    expect(workflow.indexOf("npm run stage:release:artifact"))
+      .toBeLessThan(workflow.indexOf("actions/upload-artifact@"));
   });
 
   it("keeps smoke, installed release, systemd and Nginx gates mandatory on Linux", async () => {

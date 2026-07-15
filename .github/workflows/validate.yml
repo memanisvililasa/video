@@ -179,12 +179,11 @@ jobs:
           npm run verify:release
           npm run test:release
           npm run test:release:linux
+          npm run stage:release:artifact
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: videosave-phase-a-release
-          path: |
-            .release-dist/*.tar.gz
-            .release-dist/*.tar.gz.sha256
+          name: videosave-phase-a-release-${{ github.sha }}
+          path: ci-release-artifact/
           if-no-files-found: error
           retention-days: 14
 
