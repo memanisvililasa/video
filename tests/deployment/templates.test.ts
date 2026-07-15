@@ -67,11 +67,35 @@ describe("Phase A deployment templates", () => {
   it("contains validation CI only, without production mutation commands", async () => {
     const workflow = await file(".github/workflows/validate.yml");
     expect(workflow).toContain("permissions:\n  contents: read");
-    expect(workflow).toContain("npm run test:deployment");
+    expect(workflow).toContain("npm run test:deployment:unit");
     expect(workflow).toContain("npm run verify:deployment:linux");
     expect(workflow).not.toMatch(/uses:\s+[^@\s]+@v\d+/);
     expect(workflow).not.toMatch(/\bsystemctl\b|\bufw\b|\biptables\b|certbot/i);
     expect(workflow).not.toMatch(/^\s*DATABASE_URL\s*:/m);
     expect(workflow).not.toMatch(/^\s*deploy:\s*$/m);
+  });
+
+  it("runs mandatory Linux evidence independently and fails closed in acceptance", async () => {
+    const workflow = await file(".github/workflows/validate.yml");
+    const mandatory = ["regression", "worker_smoke", "release_linux", "deployment_linux", "supply_chain"];
+    for (const job of mandatory) expect(workflow).toMatch(new RegExp(`^  ${job}:$`, "m"));
+    const beforeAcceptance = workflow.split(/^  acceptance:/m)[0];
+    expect(beforeAcceptance).not.toMatch(/^    (?:needs|if):/m);
+    expect(workflow).toContain("if: ${{ always() }}");
+    expect(workflow).toContain("needs: [regression, worker_smoke, release_linux, deployment_linux, supply_chain]");
+    for (const result of ["REGRESSION", "WORKER_SMOKE", "RELEASE_LINUX", "DEPLOYMENT_LINUX", "SUPPLY_CHAIN"]) {
+      expect(workflow).toContain(`test \"$${result}_RESULT\" = \"success\"`);
+    }
+    expect(workflow).not.toContain("continue-on-error:");
+  });
+
+  it("keeps smoke, installed release, systemd and Nginx gates mandatory on Linux", async () => {
+    const workflow = await file(".github/workflows/validate.yml");
+    expect(workflow.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(6);
+    expect(workflow).toContain("npm run test:postgres");
+    expect(workflow).toContain("npm run test:worker:smoke");
+    expect(workflow).toContain("npm run test:release:linux");
+    expect(workflow).toContain("npm run verify:deployment:linux");
+    expect(workflow).toContain('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"');
   });
 });

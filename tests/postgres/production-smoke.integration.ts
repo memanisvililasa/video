@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import pg from "pg";
@@ -25,6 +25,10 @@ let storageRoot: string;
 let web: ProductionWebRuntime;
 let server: ReturnType<typeof createServer>;
 let baseUrl: string;
+
+async function productionSmokeTemporaryRoots(): Promise<ReadonlySet<string>> {
+  return new Set((await readdir(os.tmpdir())).filter((entry) => entry.startsWith("videosave-production-smoke-")));
+}
 
 function environment(role: "web" | "worker") {
   return {
@@ -190,6 +194,7 @@ afterAll(async () => {
 
 describe("production no-egress boundary smoke", () => {
   it("persists, claims, publishes, downloads and cancels without Internet egress", async () => {
+    const fixtureRootsBefore = await productionSmokeTemporaryRoots();
     await expect(runNoEgressProductionSmoke({
       baseUrl,
       source: environment("worker"),
@@ -197,11 +202,31 @@ describe("production no-egress boundary smoke", () => {
       timeoutMs: 60_000
     })).resolves.toBeUndefined();
     const state = await bootstrap.query(
-      "SELECT status, count(*)::int AS count FROM media_jobs GROUP BY status ORDER BY status"
+      "SELECT status, processing_preset FROM media_jobs ORDER BY status"
     );
     expect(state.rows).toEqual(expect.arrayContaining([
-      expect.objectContaining({ status: "ready" }),
-      expect.objectContaining({ status: "cancelled" })
+      expect.objectContaining({ status: "ready", processing_preset: "remux-to-mp4" }),
+      expect.objectContaining({ status: "cancelled", processing_preset: "remux-to-mp4" })
     ]));
+    expect(await productionSmokeTemporaryRoots()).toEqual(fixtureRootsBefore);
   }, 70_000);
+
+  it("closes the worker and removes its fixture when the isolated API boundary fails", async () => {
+    const fixtureRootsBefore = await productionSmokeTemporaryRoots();
+    let requestCount = 0;
+    const isolatedFetch: typeof fetch = async (input, init) => {
+      requestCount += 1;
+      if (requestCount === 1) return fetch(input, init);
+      throw new Error("Isolated smoke API boundary failed.");
+    };
+    await expect(runNoEgressProductionSmoke({
+      baseUrl,
+      source: environment("worker"),
+      postgresSchema: schema,
+      timeoutMs: 10_000,
+      fetchImplementation: isolatedFetch
+    })).rejects.toThrow("Isolated smoke API boundary failed.");
+    expect(requestCount).toBe(2);
+    expect(await productionSmokeTemporaryRoots()).toEqual(fixtureRootsBefore);
+  }, 20_000);
 });

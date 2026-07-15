@@ -170,11 +170,17 @@ export async function verifyDeploymentTemplates() {
 
   containsAll(workflow, [
     "permissions:\n  contents: read",
+    "  regression:",
+    "  worker_smoke:",
+    "  release_linux:",
+    "  deployment_linux:",
+    "  supply_chain:",
+    "  acceptance:",
     "node-version: 24.18.0",
     "npm@11.6.0",
     "postgres:17",
     "ffmpeg",
-    "npm run test:deployment",
+    "npm run test:deployment:unit",
     "npm run test:postgres",
     "npm run check:cutover:test",
     "npm run test:worker:smoke",
@@ -183,11 +189,25 @@ export async function verifyDeploymentTemplates() {
     "npm run test:release:linux",
     "npm run verify:deployment:linux",
     "npm run audit:repository",
+    "test \"$(git rev-parse HEAD)\" = \"$GITHUB_SHA\"",
+    "if: ${{ always() }}",
+    "needs: [regression, worker_smoke, release_linux, deployment_linux, supply_chain]",
+    "test \"$REGRESSION_RESULT\" = \"success\"",
+    "test \"$WORKER_SMOKE_RESULT\" = \"success\"",
+    "test \"$RELEASE_LINUX_RESULT\" = \"success\"",
+    "test \"$DEPLOYMENT_LINUX_RESULT\" = \"success\"",
+    "test \"$SUPPLY_CHAIN_RESULT\" = \"success\"",
     "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
   ], "CI workflow");
   const actionRefs = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s#]+)/g)].map((match) => match[1]);
   assert(actionRefs.length > 0 && actionRefs.every((ref) => /^[a-f0-9]{40}$/.test(ref)), "CI actions must use immutable SHAs.");
   assert(!/continue-on-error:\s*true/.test(workflow), "Mandatory CI gates must not continue on error.");
+  const beforeAcceptance = workflow.split(/^  acceptance:/m)[0];
+  assert(!/^    (?:needs|if):/m.test(beforeAcceptance), "Mandatory Linux jobs must execute independently.");
+  assert((workflow.match(/^  (?:regression|worker_smoke|release_linux|deployment_linux|supply_chain):$/gm) ?? []).length === 5,
+    "CI must define every independent mandatory job exactly once.");
+  assert((workflow.match(/^          test \"\$[A-Z_]+_RESULT\" = \"success\"$/gm) ?? []).length === 5,
+    "Final acceptance must fail closed for every mandatory job result.");
   assert(!/^\s*(?:deploy|production):\s*$/m.test(workflow), "CI must not contain a production deploy job.");
   assert(!/\bsystemctl\b|\bufw\b|\biptables\b|certbot/i.test(workflow), "CI must not mutate host deployment state.");
   assert(!/^\s*DATABASE_URL\s*:/m.test(workflow), "CI must not define production DATABASE_URL.");

@@ -5,6 +5,7 @@ import https from "node:https";
 import { lookup } from "node:dns/promises";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { isIP } from "node:net";
 import { AppError } from "@/lib/errors";
 import { API_ERROR_CODES } from "@/lib/types";
 import { validateOutboundHostname, validateRedirectHostname } from "@/lib/security/ssrf";
@@ -57,6 +58,8 @@ type RequestLookupOptions = {
 };
 
 type RequestLookupCallback = (error: NodeJS.ErrnoException | null, address: string | Array<{ address: string; family: 4 | 6 }>, family?: 4 | 6) => void;
+type SafeLookupAddress = Readonly<{ address: string; family: number }>;
+type SafeAddressLookup = (hostname: string) => Promise<readonly SafeLookupAddress[]>;
 
 function assertSafeUrl(url: URL, redirect = false): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
@@ -71,6 +74,8 @@ function assertSafeUrl(url: URL, redirect = false): URL {
   if (!safety.ok) {
     throw new AppError(safety.code, safety.message, 400);
   }
+
+  url.hostname = safety.hostname;
 
   return url;
 }
@@ -104,10 +109,11 @@ function getRequestModule(url: URL): typeof http | typeof https {
   return url.protocol === "https:" ? https : http;
 }
 
-async function resolveSafeAddress(
+export async function resolveSafeAddress(
   hostname: string,
   timeoutSeconds: number,
-  signal: AbortSignal
+  signal: AbortSignal,
+  lookupAddresses: SafeAddressLookup = (value) => lookup(value, { all: true, verbatim: false })
 ): Promise<{ address: string; family: 4 | 6 }> {
   const outboundSafety = validateOutboundHostname(hostname);
   if (!outboundSafety.ok) {
@@ -119,7 +125,7 @@ async function resolveSafeAddress(
   let abort: (() => void) | undefined;
   try {
     addresses = await Promise.race([
-      lookup(outboundSafety.hostname, { all: true, verbatim: false }),
+      lookupAddresses(outboundSafety.hostname),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => reject(new Error("dns-timeout")), timeoutSeconds * 1_000);
       }),
@@ -141,18 +147,23 @@ async function resolveSafeAddress(
     throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Не удалось проверить адрес источника.", 502);
   }
 
+  const canonicalAddresses: Array<{ address: string; family: 4 | 6 }> = [];
   for (const address of addresses) {
     const addressSafety = validateOutboundHostname(address.address);
     if (!addressSafety.ok) {
       throw new AppError(addressSafety.code, addressSafety.message, 400);
     }
+    const family = isIP(addressSafety.hostname);
+    if (family !== 4 && family !== 6) {
+      throw new AppError(API_ERROR_CODES.PRIVATE_OR_LOCAL_URL, "Локальные и внутренние адреса не поддерживаются.", 400);
+    }
+    canonicalAddresses.push({ address: addressSafety.hostname, family });
   }
 
-  const [first] = addresses;
-  return { address: first.address, family: first.family === 6 ? 6 : 4 };
+  return canonicalAddresses[0];
 }
 
-function getRedirectTarget(currentUrl: URL, location: string | undefined): URL {
+export function getRedirectTarget(currentUrl: URL, location: string | undefined): URL {
   if (!location) {
     throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул redirect без Location.", 502);
   }

@@ -13,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const CLIENT_ID_HEADER = "X-VideoSave-Client-IP";
 const FIXED_CLIENT_ID = "127.0.0.1";
 const LOCAL_SOURCE_ORIGIN = "https://videosave-smoke.invalid";
+const NO_EGRESS_PROCESSING_PRESET = "remux-to-mp4";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -144,12 +145,18 @@ function responseData(body: JsonObject): JsonObject {
   return value as JsonObject;
 }
 
+function observeRuntime(promise: Promise<void>): Promise<void> {
+  void promise.catch(() => undefined);
+  return promise;
+}
+
 async function createJob(
   fetcher: typeof fetch,
   baseUrl: string,
   timeoutMs: number,
   sourceUrl: string,
-  formatId: string
+  formatId: string,
+  processingPreset: "remux-to-mp4" | "compatible-mp4"
 ): Promise<string> {
   const body = await requestJson(fetcher, `${baseUrl}/api/download`, timeoutMs, {
     method: "POST",
@@ -157,7 +164,7 @@ async function createJob(
     body: JSON.stringify({
       url: sourceUrl,
       formatId,
-      processingPreset: "compatible-mp4",
+      processingPreset,
       rightsConfirmed: true
     })
   });
@@ -198,7 +205,11 @@ async function waitForStatus(
     if (typeof job.status !== "string") throw new Error("Smoke job status was invalid.");
     if (expected.has(job.status)) return job;
     if (["failed", "cancelled", "expired"].includes(job.status)) {
-      throw new Error("Smoke job reached an unexpected terminal state.");
+      const error = job.error;
+      const code = error && typeof error === "object" && !Array.isArray(error) && typeof (error as JsonObject).code === "string"
+        ? String((error as JsonObject).code).slice(0, 64)
+        : "UNKNOWN";
+      throw new Error(`Smoke job reached an unexpected terminal state (${job.status}:${code}).`);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -335,14 +346,15 @@ export async function runNoEgressProductionSmoke(options: ProductionSmokeOptions
     });
     await runtime.readiness();
     await createFixture(runtime.config.ffmpegPath, fixtureRoot);
-    running = runtime.run();
+    running = observeRuntime(runtime.run());
 
     const readyJobId = await createJob(
       fetcher,
       baseUrl,
       5_000,
       `${LOCAL_SOURCE_ORIGIN}/ready.mp4`,
-      "smoke-fixture"
+      "smoke-fixture",
+      NO_EGRESS_PROCESSING_PRESET
     );
     jobIds.push(readyJobId);
     if (!(await runtime.repository.get(readyJobId))) {
@@ -358,7 +370,8 @@ export async function runNoEgressProductionSmoke(options: ProductionSmokeOptions
       baseUrl,
       5_000,
       `${LOCAL_SOURCE_ORIGIN}/cancel.mp4`,
-      "smoke-fixture"
+      "smoke-fixture",
+      NO_EGRESS_PROCESSING_PRESET
     );
     jobIds.push(cancelJobId);
     await waitForStatus(fetcher, baseUrl, cancelJobId, new Set(["running"]), deadline);
@@ -403,9 +416,9 @@ export async function runControlledEgressSmoke(
       WORKER_ATTEMPT_TIMEOUT_MS: String(attemptTimeoutMs)
     }, { postgresSchema: input.postgresSchema });
     await runtime.readiness();
-    running = runtime.run();
+    running = observeRuntime(runtime.run());
     await requestJson(fetcher, `${config.baseUrl}/api/health`, 5_000, { method: "GET" });
-    jobId = await createJob(fetcher, config.baseUrl, 5_000, config.sourceUrl, "direct-source");
+    jobId = await createJob(fetcher, config.baseUrl, 5_000, config.sourceUrl, "direct-source", "compatible-mp4");
     const ready = await waitForStatus(fetcher, config.baseUrl, jobId, new Set(["ready"]), deadline);
     await verifyDownload(fetcher, config.baseUrl, 15_000, ready, config.maxBytes);
   } finally {

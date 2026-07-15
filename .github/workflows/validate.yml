@@ -9,8 +9,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CI: "true"
+
 jobs:
-  validate:
+  regression:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
@@ -27,89 +30,155 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-
     env:
       TEST_DATABASE_URL: postgresql://videosave_ci:disposable_ci_only@127.0.0.1:5432/videosave_ci
       POSTGRES_SSL_MODE: disable
-      CI: "true"
-
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-
+      - name: Verify exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short --untracked-files=all)"
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24.18.0
           cache: npm
-
       - name: Pin npm toolchain
         run: |
           npm install --global npm@11.6.0
           test "$(node --version)" = "v24.18.0"
           test "$(npm --version)" = "11.6.0"
-
       - name: Install FFmpeg runtime
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends ffmpeg nginx
+          sudo apt-get install --yes --no-install-recommends ffmpeg
           ffmpeg -version
           ffprobe -version
-          nginx -v
-          systemd-analyze --version
-
       - name: Install dependencies
         run: npm ci
-
       - name: Install browser runtime
         run: npx playwright install --with-deps chromium
-
       - name: Validate migration catalog
         run: |
           npm run db:migrate:test
           npm run db:migrate:test:status
-
       - name: Unit and browser regression
         run: |
           npm run test:unit
           npm run test:browser
-
-      - name: PostgreSQL, worker, and media regression
+      - name: PostgreSQL and no-egress regression
+        run: npm run test:postgres
+      - name: Cutover and worker regression
         run: |
-          npm run test:postgres
           npm run check:cutover:test
           npm run test:worker
-          npm run test:worker:smoke
 
-      - name: Deployment contract
-        run: npm run test:deployment
+  worker_smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: videosave_ci
+          POSTGRES_USER: videosave_ci
+          POSTGRES_PASSWORD: disposable_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U videosave_ci -d videosave_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://videosave_ci:disposable_ci_only@127.0.0.1:5432/videosave_ci
+      POSTGRES_SSL_MODE: disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short --untracked-files=all)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Pin npm toolchain
+        run: |
+          npm install --global npm@11.6.0
+          test "$(node --version)" = "v24.18.0"
+          test "$(npm --version)" = "11.6.0"
+      - name: Install FFmpeg runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+      - name: Install dependencies
+        run: npm ci
+      - name: Real FFmpeg worker smoke
+        run: npm run test:worker:smoke
 
+  release_linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: videosave_ci
+          POSTGRES_USER: videosave_ci
+          POSTGRES_PASSWORD: disposable_ci_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U videosave_ci -d videosave_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://videosave_ci:disposable_ci_only@127.0.0.1:5432/videosave_ci
+      POSTGRES_SSL_MODE: disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short --untracked-files=all)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Pin npm toolchain
+        run: |
+          npm install --global npm@11.6.0
+          test "$(node --version)" = "v24.18.0"
+          test "$(npm --version)" = "11.6.0"
+      - name: Install FFmpeg runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg
+          ffmpeg -version
+          ffprobe -version
+      - name: Install dependencies
+        run: npm ci
       - name: Static and build gates
         run: |
           npm run typecheck
           npm run build:worker
           npm run build
-
-      - name: Immutable release gate
+      - name: Immutable Linux release gate
         run: |
           npm run build:release
           npm run verify:release
           npm run test:release
           npm run test:release:linux
-
-      - name: Linux deployment syntax and ingress gate
-        run: npm run verify:deployment:linux
-
-      - name: Dependency audit
-        run: npm audit --omit=dev --audit-level=high
-
-      - name: Scope and secret exclusion audit
-        run: |
-          npm run verify:deployment
-          npm run audit:repository
-          git diff --check
-          test -z "$(git status --short --untracked-files=all)"
-
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: videosave-phase-a-release
@@ -118,3 +187,87 @@ jobs:
             .release-dist/*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
+
+  deployment_linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short --untracked-files=all)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Pin npm toolchain
+        run: |
+          npm install --global npm@11.6.0
+          test "$(node --version)" = "v24.18.0"
+          test "$(npm --version)" = "11.6.0"
+      - name: Install Linux deployment validators
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends ffmpeg nginx
+          nginx -v
+          systemd-analyze --version
+      - name: Install dependencies
+        run: npm ci
+      - name: Deployment contract unit tests
+        run: npm run test:deployment:unit
+      - name: Linux systemd, Nginx, and ingress gate
+        run: npm run verify:deployment:linux
+
+  supply_chain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Verify exact checkout
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --short --untracked-files=all)"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.18.0
+          cache: npm
+      - name: Pin npm toolchain
+        run: |
+          npm install --global npm@11.6.0
+          test "$(node --version)" = "v24.18.0"
+          test "$(npm --version)" = "11.6.0"
+      - name: Install dependencies
+        run: npm ci
+      - name: Dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Scope and secret exclusion audit
+        run: |
+          npm run verify:deployment
+          npm run audit:repository
+          git diff --check
+          test -z "$(git status --short --untracked-files=all)"
+
+  acceptance:
+    if: ${{ always() }}
+    needs: [regression, worker_smoke, release_linux, deployment_linux, supply_chain]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      REGRESSION_RESULT: ${{ needs.regression.result }}
+      WORKER_SMOKE_RESULT: ${{ needs.worker_smoke.result }}
+      RELEASE_LINUX_RESULT: ${{ needs.release_linux.result }}
+      DEPLOYMENT_LINUX_RESULT: ${{ needs.deployment_linux.result }}
+      SUPPLY_CHAIN_RESULT: ${{ needs.supply_chain.result }}
+    steps:
+      - name: Require every mandatory Phase A gate
+        run: |
+          test "$REGRESSION_RESULT" = "success"
+          test "$WORKER_SMOKE_RESULT" = "success"
+          test "$RELEASE_LINUX_RESULT" = "success"
+          test "$DEPLOYMENT_LINUX_RESULT" = "success"
+          test "$SUPPLY_CHAIN_RESULT" = "success"
