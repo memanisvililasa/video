@@ -12,7 +12,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { initializeVolumeMarker } from "./durable-volume-admin.mjs";
 import { installRelease } from "./release-deployment.mjs";
 import {
@@ -26,6 +26,12 @@ const run = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const releaseRoot = path.join(projectRoot, RELEASE_ROOT_DIRECTORY);
 const AUTHORITY = "0123456789abcdef0123456789abcdef";
+const INSTALLED_COMMAND_LABELS = new Set([
+  "migration-apply",
+  "migration-status",
+  "web-readiness",
+  "worker-readiness"
+]);
 
 async function availablePort() {
   return new Promise((resolve, reject) => {
@@ -65,17 +71,45 @@ async function makeWritable(value) {
   }
 }
 
-async function runChecked(entrypoint, args, options) {
+export async function runChecked(label, entrypoint, args, options) {
+  if (!INSTALLED_COMMAND_LABELS.has(label)) {
+    throw new TypeError("Installed release command label is invalid.");
+  }
+  const execute = options.execute ?? run;
   try {
-    await run(process.execPath, [entrypoint, ...args], {
+    await execute(process.execPath, [entrypoint, ...args], {
       cwd: options.cwd,
       env: options.env,
       timeout: options.timeout ?? 30_000,
       maxBuffer: 512 * 1024
     });
   } catch {
-    throw new Error("Installed release command failed without exposing runtime configuration.");
+    throw new Error(`Installed release command failed: ${label}.`);
   }
+}
+
+export async function validateInstalledReleaseReadiness(options) {
+  const migrationEnvironment = { ...options.common, APP_PROCESS_ROLE: "migration" };
+  await runChecked("migration-apply", "scripts/postgres-migrations.mjs", ["apply"], {
+    cwd: options.installedRoot,
+    env: migrationEnvironment,
+    execute: options.execute
+  });
+  await runChecked("migration-status", "scripts/postgres-migrations.mjs", ["status"], {
+    cwd: options.installedRoot,
+    env: migrationEnvironment,
+    execute: options.execute
+  });
+  await runChecked("web-readiness", "checks/web-readiness.mjs", [], {
+    cwd: options.installedRoot,
+    env: { ...options.common, APP_PROCESS_ROLE: "web" },
+    execute: options.execute
+  });
+  await runChecked("worker-readiness", "worker/main.mjs", ["--check"], {
+    cwd: options.installedRoot,
+    env: options.workerEnvironment,
+    execute: options.execute
+  });
 }
 
 async function waitForOutput(child, output, marker, timeoutMs) {
@@ -149,14 +183,6 @@ async function main() {
       MEDIA_STORAGE_LOW_DISK_BYTES: "1048576",
       MEDIA_FINAL_TTL_SECONDS: "60"
     };
-    await runChecked("scripts/postgres-migrations.mjs", ["status"], {
-      cwd: installedRoot,
-      env: { ...common, APP_PROCESS_ROLE: "migration" }
-    });
-    await runChecked("checks/web-readiness.mjs", [], {
-      cwd: installedRoot,
-      env: { ...common, APP_PROCESS_ROLE: "web" }
-    });
     const workerEnvironment = {
       ...common,
       APP_PROCESS_ROLE: "worker",
@@ -179,7 +205,7 @@ async function main() {
       FFMPEG_PATH: ffmpeg,
       FFPROBE_PATH: ffprobe
     };
-    await runChecked("worker/main.mjs", ["--check"], { cwd: installedRoot, env: workerEnvironment });
+    await validateInstalledReleaseReadiness({ installedRoot, common, workerEnvironment });
 
     const port = await availablePort();
     if (!port) throw new Error("Web loopback port was not allocated.");
@@ -249,7 +275,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Linux installed release validation failed.");
-  process.exitCode = 1;
-});
+const invokedAsScript = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (invokedAsScript) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "Linux installed release validation failed.");
+    process.exitCode = 1;
+  });
+}

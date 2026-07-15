@@ -43,6 +43,8 @@ describe("Phase A deployment templates", () => {
     expect(nginx.match(/proxy_set_header X-VideoSave-Client-IP \$remote_addr;/g)).toHaveLength(2);
     expect(nginx.match(/proxy_set_header X-Forwarded-For "";/g)).toHaveLength(2);
     expect(nginx.match(/proxy_set_header Host __PUBLIC_HOSTNAME__;/g)).toHaveLength(2);
+    expect(nginx).toContain('location ~ "^/api/file/[A-Za-z0-9_-]{8,128}$" {');
+    expect(nginx).not.toContain("location ~ ^/api/file/[A-Za-z0-9_-]{8,128}$ {");
     expect(nginx).not.toContain("$proxy_add_x_forwarded_for");
     expect(nginx).not.toMatch(/\b(?:alias|root)\s+\/var\/lib\/videosave\/media/);
     expect(nginx).not.toContain("limit_except");
@@ -93,6 +95,7 @@ describe("Phase A deployment templates", () => {
     const workflow = await file(".github/workflows/validate.yml");
     expect(workflow.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(6);
     expect(workflow).toContain("npm run test:postgres");
+    expect(workflow).toContain("name: Mandatory compatible-transcode worker smoke");
     expect(workflow).toContain("npm run test:worker:smoke");
     expect(workflow).toContain("npm run test:release:linux");
     expect(workflow).toContain("npm run verify:deployment:linux");

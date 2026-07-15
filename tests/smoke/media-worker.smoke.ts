@@ -8,12 +8,14 @@ import { promisify } from "node:util";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Extractor } from "@/lib/extractors/types";
+import { createConfiguredMediaProcessRunner } from "@/lib/ffmpeg/process-runner";
 import { createProductionMediaWorkerRuntime, type ProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
 import {
   provisionDurableVolumeTestRoot,
   TEST_DURABLE_VOLUME_AUTHORITY_ID
 } from "@/tests/helpers/durable-volume";
+import { createSafeMediaDiagnosticRunner } from "@/tests/helpers/media-process-diagnostic";
 
 const runFile = promisify(execFile);
 const { Client } = pg;
@@ -27,6 +29,7 @@ let temporaryRoot: string;
 let storageRoot: string;
 let fixturePath: string;
 let runtime: ProductionMediaWorkerRuntime | null = null;
+let mediaFailure = () => "none";
 
 async function waitForReady(jobId: string): Promise<void> {
   const deadline = Date.now() + 30_000;
@@ -34,7 +37,7 @@ async function waitForReady(jobId: string): Promise<void> {
     const job = await runtime?.repository.get(jobId);
     if (job?.status === "ready") return;
     if (job && ["failed", "cancelled", "expired"].includes(job.status)) {
-      throw new Error(`Real-media worker ended in ${job.status}.`);
+      throw new Error(`Real-media worker ended in ${job.status}; media=${mediaFailure()}.`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
@@ -49,9 +52,11 @@ beforeAll(async () => {
   await provisionDurableVolumeTestRoot(storageRoot);
   await runFile("ffmpeg", [
     "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10",
+    "-filter_threads", "1",
+    "-f", "lavfi", "-i", "testsrc2=size=64x64:rate=10",
     "-f", "lavfi", "-i", "sine=frequency=1000:sample_rate=48000",
-    "-t", "1", "-c:v", "mpeg4", "-q:v", "5", "-c:a", "aac", "-shortest",
+    "-t", "1", "-c:v", "mpeg4", "-q:v", "5", "-pix_fmt", "yuv420p", "-threads", "1",
+    "-c:a", "aac", "-shortest",
     fixturePath
   ], { timeout: 20_000, maxBuffer: 128 * 1024 });
 
@@ -79,6 +84,13 @@ afterAll(async () => {
 
 describe("real ffprobe/FFmpeg worker smoke", () => {
   it("transcodes a local fixture and publishes a probed compatible MP4", async () => {
+    const diagnostic = createSafeMediaDiagnosticRunner(createConfiguredMediaProcessRunner({
+      binaryPaths: { ffmpeg: "ffmpeg", ffprobe: "ffprobe" },
+      nodeEnv: "test",
+      pathValue: process.env.PATH,
+      killGraceMs: 1_000
+    }));
+    mediaFailure = diagnostic.failure;
     const extractor: Extractor = {
       id: "local-smoke-fixture",
       name: "Local smoke fixture",
@@ -140,7 +152,7 @@ describe("real ffprobe/FFmpeg worker smoke", () => {
       FFMPEG_PATH: "ffmpeg",
       FFPROBE_PATH: "ffprobe",
       NODE_ENV: "test"
-    }, { postgresSchema: schema, getExtractor: () => extractor });
+    }, { postgresSchema: schema, getExtractor: () => extractor, runProcess: diagnostic.run });
     await runtime.readiness();
     const jobId = "job_real_media_smoke";
     await runtime.queue.enqueue({

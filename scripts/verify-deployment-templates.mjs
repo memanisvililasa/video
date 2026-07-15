@@ -115,6 +115,7 @@ export async function verifyDeploymentTemplates() {
     "client_header_timeout 15s;",
     "proxy_connect_timeout 5s;",
     "proxy_buffering off;",
+    "location ~ \"^/api/file/[A-Za-z0-9_-]{8,128}$\" {",
     "request_id=$request_id",
     "method=$request_method uri=$uri"
   ], "Nginx template");

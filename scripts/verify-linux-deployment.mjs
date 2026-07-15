@@ -6,7 +6,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const run = promisify(execFile);
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
@@ -124,88 +124,125 @@ async function waitForNginx(port, child) {
   throw new Error("Nginx did not become ready.");
 }
 
-async function verifyNginx(root) {
-  const upstream = createHttpServer((request, response) => {
+async function closeHttpServer(server) {
+  if (!server.listening) return;
+  server.closeAllConnections?.();
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+async function stopChild(child, timeoutMs = 5_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  try {
+    await Promise.race([
+      exited,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("Nginx did not stop gracefully.")), timeoutMs))
+    ]);
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await Promise.race([
+      exited,
+      new Promise((resolve) => setTimeout(resolve, 1_000))
+    ]);
+    throw error;
+  }
+}
+
+export async function withUpstreamFixture(operation, createServer = createHttpServer) {
+  const upstream = createServer((request, response) => {
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify({ method: request.method, headers: request.headers }));
   });
-  await new Promise((resolve, reject) => {
-    upstream.once("error", reject);
-    upstream.listen(0, "127.0.0.1", resolve);
-  });
-  const address = upstream.address();
-  const upstreamPort = typeof address === "object" && address ? address.port : null;
-  const httpPort = await availablePort();
-  const httpsPort = await availablePort();
-  if (!upstreamPort || !httpPort || !httpsPort) throw new Error("Loopback ports were not allocated.");
-  const tls = await createCertificate(root);
-  let template = await readFile(path.join(projectRoot, "deployment/nginx/videosave.conf"), "utf8");
-  template = template
-    .replaceAll("__PUBLIC_HOSTNAME__", "videosave.test")
-    .replaceAll("__TLS_CERTIFICATE_FILE__", tls.certificate)
-    .replaceAll("__TLS_CERTIFICATE_KEY_FILE__", tls.key)
-    .replace("server 127.0.0.1:3000;", `server 127.0.0.1:${upstreamPort};`)
-    .replace("listen 80;", `listen 127.0.0.1:${httpPort};`)
-    .replace("listen [::]:80;", `listen [::1]:${httpPort};`)
-    .replace("listen 443 ssl http2;", `listen 127.0.0.1:${httpsPort} ssl;`)
-    .replace("listen [::]:443 ssl http2;", `listen [::1]:${httpsPort} ssl;`)
-    .replace("/var/log/nginx/videosave-access.log", path.join(root, "access.log"))
-    .replace("/var/log/nginx/videosave-error.log", path.join(root, "error.log"));
-  const config = path.join(root, "nginx.conf");
-  await writeFile(config, [
-    `pid ${path.join(root, "nginx.pid")};`,
-    "error_log stderr notice;",
-    "events { worker_connections 64; }",
-    "http {",
-    "  default_type application/octet-stream;",
-    template,
-    "}"
-  ].join("\n"), { mode: 0o600 });
-  await run("nginx", ["-t", "-p", `${root}/`, "-c", config], { maxBuffer: 1024 * 1024 });
-  const child = spawn("nginx", ["-p", `${root}/`, "-c", config, "-g", "daemon off; master_process off;"], {
-    stdio: ["ignore", "pipe", "pipe"]
-  });
   try {
-    await waitForNginx(httpsPort, child);
-    const redirect = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
-      headers: { Host: "videosave.test" },
-      redirect: "manual",
-      signal: AbortSignal.timeout(5_000)
+    await new Promise((resolve, reject) => {
+      upstream.once("error", reject);
+      upstream.listen(0, "127.0.0.1", resolve);
     });
-    if (redirect.status !== 308 || redirect.headers.get("location") !== "https://videosave.test/api/health") {
-      throw new Error("Nginx HTTPS redirect contract failed.");
-    }
-    for (const method of ["GET", "POST", "DELETE", "OPTIONS"]) {
-      const result = await httpsJson(httpsPort, method, "/api/health", {
-        "X-VideoSave-Client-IP": "203.0.113.10",
-        "X-Forwarded-For": "198.51.100.2, 203.0.113.3",
-        "X-Real-IP": "198.51.100.4",
-        Forwarded: "for=198.51.100.5"
-      });
-      if (result.status !== 200 || result.body.method !== method) throw new Error("Nginx method proxying failed.");
-      const headers = result.body.headers;
-      if (headers["x-videosave-client-ip"] !== "127.0.0.1") throw new Error("Trusted identity was not overwritten.");
-      for (const name of ["x-forwarded-for", "x-real-ip", "forwarded"]) {
-        if (headers[name] !== undefined) throw new Error("Spoofable forwarding header reached the origin.");
-      }
-    }
-    const ipv6 = await httpsJson(httpsPort, "GET", "/api/health", {
-      "X-VideoSave-Client-IP": "198.51.100.1",
-      "X-Forwarded-For": "203.0.113.1"
-    }, "::1");
-    if (ipv6.body.headers["x-videosave-client-ip"] !== "::1") {
-      throw new Error("Nginx IPv6 trusted identity contract failed.");
-    }
-    if (ipv6.body.headers["x-forwarded-for"] !== undefined) {
-      throw new Error("Nginx IPv6 forwarding header sanitization failed.");
-    }
-    const file = await httpsJson(httpsPort, "GET", `/api/file/file_${"a".repeat(32)}`);
-    if (file.status !== 200) throw new Error("Nginx file route streaming proxy failed.");
+    const address = upstream.address();
+    const upstreamPort = typeof address === "object" && address ? address.port : null;
+    if (!upstreamPort) throw new Error("Upstream loopback port was not allocated.");
+    return await operation(upstreamPort);
   } finally {
-    child.kill("SIGTERM");
-    await new Promise((resolve) => child.once("exit", resolve));
-    await new Promise((resolve) => upstream.close(resolve));
+    await closeHttpServer(upstream);
   }
+}
+
+async function verifyNginx(root) {
+  return withUpstreamFixture(async (upstreamPort) => {
+    const httpPort = await availablePort();
+    const httpsPort = await availablePort();
+    if (!httpPort || !httpsPort) throw new Error("Loopback ports were not allocated.");
+    const tls = await createCertificate(root);
+    let template = await readFile(path.join(projectRoot, "deployment/nginx/videosave.conf"), "utf8");
+    template = template
+      .replaceAll("__PUBLIC_HOSTNAME__", "videosave.test")
+      .replaceAll("__TLS_CERTIFICATE_FILE__", tls.certificate)
+      .replaceAll("__TLS_CERTIFICATE_KEY_FILE__", tls.key)
+      .replace("server 127.0.0.1:3000;", `server 127.0.0.1:${upstreamPort};`)
+      .replace("listen 80;", `listen 127.0.0.1:${httpPort};`)
+      .replace("listen [::]:80;", `listen [::1]:${httpPort};`)
+      .replace("listen 443 ssl http2;", `listen 127.0.0.1:${httpsPort} ssl;`)
+      .replace("listen [::]:443 ssl http2;", `listen [::1]:${httpsPort} ssl;`)
+      .replace("/var/log/nginx/videosave-access.log", path.join(root, "access.log"))
+      .replace("/var/log/nginx/videosave-error.log", path.join(root, "error.log"));
+    const config = path.join(root, "nginx.conf");
+    await writeFile(config, [
+      `pid ${path.join(root, "nginx.pid")};`,
+      "error_log stderr notice;",
+      "events { worker_connections 64; }",
+      "http {",
+      "  default_type application/octet-stream;",
+      template,
+      "}"
+    ].join("\n"), { mode: 0o600 });
+    let child;
+    try {
+      await run("nginx", ["-t", "-p", `${root}/`, "-c", config], { maxBuffer: 1024 * 1024 });
+      child = spawn("nginx", ["-p", `${root}/`, "-c", config, "-g", "daemon off; master_process off;"], {
+        stdio: ["ignore", "pipe", "pipe"]
+      });
+      await waitForNginx(httpsPort, child);
+      const redirect = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
+        headers: { Host: "videosave.test" },
+        redirect: "manual",
+        signal: AbortSignal.timeout(5_000)
+      });
+      if (redirect.status !== 308 || redirect.headers.get("location") !== "https://videosave.test/api/health") {
+        throw new Error("Nginx HTTPS redirect contract failed.");
+      }
+      for (const method of ["GET", "POST", "DELETE", "OPTIONS"]) {
+        const result = await httpsJson(httpsPort, method, "/api/health", {
+          "X-VideoSave-Client-IP": "203.0.113.10",
+          "X-Forwarded-For": "198.51.100.2, 203.0.113.3",
+          "X-Real-IP": "198.51.100.4",
+          Forwarded: "for=198.51.100.5"
+        });
+        if (result.status !== 200 || result.body.method !== method) throw new Error("Nginx method proxying failed.");
+        const headers = result.body.headers;
+        if (headers["x-videosave-client-ip"] !== "127.0.0.1") throw new Error("Trusted identity was not overwritten.");
+        for (const name of ["x-forwarded-for", "x-real-ip", "forwarded"]) {
+          if (headers[name] !== undefined) throw new Error("Spoofable forwarding header reached the origin.");
+        }
+      }
+      const ipv6 = await httpsJson(httpsPort, "GET", "/api/health", {
+        "X-VideoSave-Client-IP": "198.51.100.1",
+        "X-Forwarded-For": "203.0.113.1"
+      }, "::1");
+      if (ipv6.body.headers["x-videosave-client-ip"] !== "::1") {
+        throw new Error("Nginx IPv6 trusted identity contract failed.");
+      }
+      if (ipv6.body.headers["x-forwarded-for"] !== undefined) {
+        throw new Error("Nginx IPv6 forwarding header sanitization failed.");
+      }
+      const file = await httpsJson(httpsPort, "GET", `/api/file/file_${"a".repeat(32)}`);
+      if (file.status !== 200) throw new Error("Nginx file route streaming proxy failed.");
+    } finally {
+      await stopChild(child);
+    }
+  });
 }
 
 async function main() {
@@ -220,7 +257,10 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : "Linux deployment validation failed.");
-  process.exitCode = 1;
-});
+const invokedAsScript = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (invokedAsScript) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : "Linux deployment validation failed.");
+    process.exitCode = 1;
+  });
+}
