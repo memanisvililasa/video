@@ -18,6 +18,8 @@ import {
 import type { WorkerLogger } from "@/lib/worker/logger";
 import type { MediaWorkerProcessor } from "@/lib/worker/processor";
 import { createWorkerProgressReporter } from "@/lib/worker/progress";
+import type { OperationalSignals } from "@/lib/observability/signals";
+import { jobErrorCategory, safeSignalMetric } from "@/lib/observability/signals";
 
 const MAX_IDLE_BACKOFF_MS = 5_000;
 
@@ -58,6 +60,7 @@ export type CreateMediaWorkerRuntimeOptions = Readonly<{
   onUnsafeInfrastructure?: (listener: () => void) => () => void;
   random?: () => number;
   now?: () => number;
+  signals?: OperationalSignals;
 }>;
 
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
@@ -94,9 +97,15 @@ export function createMediaWorkerRuntime(
   const removeUnsafeListener = options.onUnsafeInfrastructure?.(() => {
     for (const session of activeSessions) session.abort("infrastructure-unavailable");
   });
+  safeSignalMetric(() => options.signals?.metrics.setWorkerCapacity(options.concurrency, 0));
 
   function timestamp(): string {
     return new Date(now()).toISOString();
+  }
+
+  function failureStage(category: ReturnType<typeof jobErrorCategory>): "download" | "probe" | "transcode" | "publication" | "completion" {
+    if (category === "download" || category === "probe" || category === "transcode" || category === "publication") return category;
+    return "completion";
   }
 
   function startHeartbeat(session: OwnedJobLeaseSession): () => Promise<void> {
@@ -167,6 +176,7 @@ export function createMediaWorkerRuntime(
   }
 
   async function processClaim(claimed: ClaimedMediaJob): Promise<void> {
+    const attemptStartedAt = performance.now();
     const session = createOwnedJobLeaseSession({
       job: claimed,
       queue: options.queue,
@@ -174,6 +184,7 @@ export function createMediaWorkerRuntime(
       publication: options.publication
     });
     activeSessions.add(session);
+    safeSignalMetric(() => options.signals?.metrics.setWorkerCapacity(options.concurrency, activeSessions.size));
     const stopHeartbeat = startHeartbeat(session);
     const progress = createWorkerProgressReporter({
       session,
@@ -183,13 +194,30 @@ export function createMediaWorkerRuntime(
     const attemptTimer = setTimeout(() => session.abort("attempt-timeout"), options.attemptTimeoutMs);
     try {
       await options.processor.process({ claimed, session, progress });
-      if (!session.terminal()) {
+      const completedReady = session.terminal();
+      if (!completedReady) {
         await session.completeFailed(API_ERROR_CODES.INTERNAL_ERROR);
+      }
+      if (completedReady) {
+        const preset = options.signals?.preset(claimed.record.processingPreset) ?? "unknown";
+        const duration = options.signals?.jobDurationSeconds(claimed.record, now()) ?? 0;
+        options.signals?.emit("info", "job.completed", {
+          outcome: "success",
+          reasonCode: "none",
+          publicJobId: claimed.record.jobId,
+          attempt: claimed.record.retryCount + 1,
+          preset,
+          stage: "completion",
+          durationMs: duration * 1_000
+        });
+        safeSignalMetric(() => options.signals?.metrics.jobCompleted(preset, duration));
       }
       options.logger.info("worker.job.completed", { jobId: claimed.record.jobId });
     } catch (error) {
       const disposition = classifyWorkerError(error, session.abortReason());
       if (disposition.type === "terminal") {
+        const category = jobErrorCategory(disposition.code);
+        safeSignalMetric(() => options.signals?.metrics.workerFailure(failureStage(category), category));
         const completed = await session.completeFailed(disposition.code).catch(() => false);
         options.logger.warn("worker.job.terminal", {
           jobId: claimed.record.jobId,
@@ -197,6 +225,18 @@ export function createMediaWorkerRuntime(
           completed
         });
       } else if (disposition.type === "retryable") {
+        const category = jobErrorCategory(disposition.code);
+        safeSignalMetric(() => options.signals?.metrics.workerFailure(failureStage(category), category));
+        options.signals?.emit("warn", "job.failed", {
+          outcome: "failure",
+          reasonCode: "internal_error",
+          errorCategory: category,
+          publicJobId: claimed.record.jobId,
+          attempt: claimed.record.retryCount + 1,
+          preset: options.signals.preset(claimed.record.processingPreset),
+          stage: "completion",
+          durationMs: Math.max(0, performance.now() - attemptStartedAt)
+        });
         options.logger.warn("worker.job.retryable", {
           jobId: claimed.record.jobId,
           code: disposition.code
@@ -213,6 +253,7 @@ export function createMediaWorkerRuntime(
       await stopHeartbeat();
       await session.waitForMutations();
       activeSessions.delete(session);
+      safeSignalMetric(() => options.signals?.metrics.setWorkerCapacity(options.concurrency, activeSessions.size));
     }
   }
 

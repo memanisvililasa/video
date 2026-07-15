@@ -28,7 +28,10 @@ describe("internal web observability boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getWebReadinessProbe.mockResolvedValue({ check: vi.fn().mockResolvedValue({ ready: true, reasonCategory: "none" }) });
-    mocks.getWebObservability.mockResolvedValue({ metrics: { registry: { render: () => "# HELP process_up Process.\n# TYPE process_up gauge\nprocess_up 1\n" } } });
+    mocks.getWebObservability.mockResolvedValue({
+      collectMetrics: vi.fn().mockResolvedValue(undefined),
+      metrics: { registry: { render: () => "# HELP process_up Process.\n# TYPE process_up gauge\nprocess_up 1\n" } }
+    });
   });
 
   it("keeps liveness dependency-independent and bounded", async () => {

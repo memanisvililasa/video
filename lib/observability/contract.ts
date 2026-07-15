@@ -26,7 +26,42 @@ export const OPERATIONAL_EVENTS = Object.freeze([
   "db.connected",
   "db.unavailable",
   "migration.status",
-  "migration.mismatch"
+  "migration.mismatch",
+  "db.query.failed",
+  "db.pool.exhausted",
+  "job.queued",
+  "job.claimed",
+  "job.lease_lost",
+  "job.progress",
+  "job.retry_scheduled",
+  "job.retry_exhausted",
+  "job.completed",
+  "job.failed",
+  "job.cancelled",
+  "job.expired",
+  "download.started",
+  "download.completed",
+  "download.failed",
+  "probe.started",
+  "probe.completed",
+  "probe.failed",
+  "transcode.started",
+  "transcode.completed",
+  "transcode.failed",
+  "artifact.staged",
+  "artifact.published",
+  "artifact.publication_failed",
+  "lifecycle.leader_acquired",
+  "lifecycle.leader_lost",
+  "recovery.started",
+  "recovery.completed",
+  "recovery.failed",
+  "reconciliation.started",
+  "reconciliation.completed",
+  "reconciliation.failed",
+  "cleanup.started",
+  "cleanup.completed",
+  "cleanup.failed"
 ] as const);
 export type OperationalEvent = (typeof OPERATIONAL_EVENTS)[number];
 
@@ -77,6 +112,16 @@ export const REASON_CODES = Object.freeze([
   "body_not_allowed",
   "request_aborted",
   "cancelled",
+  "lease_lost",
+  "retry_scheduled",
+  "retry_exhausted",
+  "download_failed",
+  "probe_failed",
+  "transcode_failed",
+  "publication_failed",
+  "maintenance_failed",
+  "pool_exhausted",
+  "storage_read_only",
   "internal_error"
 ] as const);
 export type OperationalReasonCode = (typeof REASON_CODES)[number];
@@ -106,6 +151,33 @@ export const MEDIA_STAGES = Object.freeze([
   "completion"
 ] as const);
 export type ObservedMediaStage = (typeof MEDIA_STAGES)[number];
+
+export const PROCESSING_PRESETS = Object.freeze([
+  "original",
+  "remux-to-mp4",
+  "compatible-mp4",
+  "audio-only",
+  "unknown"
+] as const);
+export type ObservedProcessingPreset = (typeof PROCESSING_PRESETS)[number];
+
+export const JOB_STATUSES = Object.freeze([
+  "queued",
+  "running",
+  "ready",
+  "failed",
+  "cancelled",
+  "expired"
+] as const);
+export type ObservedJobStatus = (typeof JOB_STATUSES)[number];
+
+export const MAINTENANCE_OPERATIONS = Object.freeze([
+  "recovery",
+  "reconciliation",
+  "cleanup",
+  "expiration"
+] as const);
+export type ObservedMaintenanceOperation = (typeof MAINTENANCE_OPERATIONS)[number];
 
 export type ProcessMetadata = Readonly<{
   schemaVersion: typeof OBSERVABILITY_SCHEMA_VERSION;

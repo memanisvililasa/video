@@ -92,6 +92,7 @@ export function createWorkerObservabilityListener(options: Readonly<{
     }
     if (path === `${INTERNAL_PREFIX}metrics`) {
       try {
+        await options.observability.collectMetrics();
         const body = options.observability.metrics.registry.render();
         send(response, 200, body, head, "text/plain; version=0.0.4; charset=utf-8");
       } catch {

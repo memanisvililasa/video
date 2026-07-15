@@ -9,10 +9,17 @@ import type { MediaStorageHealth } from "@/lib/storage/media-storage";
 import type { MediaStorageReconciler } from "@/lib/storage/reconciliation";
 import { createMediaLifecycleCoordinator } from "@/lib/worker/lifecycle-coordinator";
 import type { WorkerLogger } from "@/lib/worker/logger";
+import type { OperationalSignals } from "@/lib/observability/signals";
+import { createProcessObservability } from "@/lib/observability/runtime";
 
 const logger: WorkerLogger = Object.freeze({ info() {}, warn() {}, error() {} });
 
-function dependencies(overrides: { healthy?: boolean; leader?: boolean } = {}) {
+function dependencies(overrides: {
+  healthy?: boolean;
+  leader?: boolean;
+  reconciliationFails?: boolean;
+  cleanupFails?: boolean;
+} = {}) {
   let healthy = overrides.healthy ?? true;
   let released = false;
   const leadership: MediaLifecycleLeadership = {
@@ -24,7 +31,10 @@ function dependencies(overrides: { healthy?: boolean; leader?: boolean } = {}) {
   };
   const maintenance = {
     expireOverdueActiveJobs: vi.fn(async () => []),
-    expireTerminalJobs: vi.fn(async () => []),
+    expireTerminalJobs: vi.fn(async () => {
+      if (overrides.cleanupFails) throw new Error("cleanup failure");
+      return [];
+    }),
     expireReadyJobForMissingArtifact: vi.fn(async () => false),
     failJobForDanglingPublishedArtifact: vi.fn(async () => false),
     deleteRetainedExpiredJobs: vi.fn(async () => 0),
@@ -42,14 +52,17 @@ function dependencies(overrides: { healthy?: boolean; leader?: boolean } = {}) {
     recoverExpiredLeases: vi.fn(async () => ({ requeued: [], failed: [] }))
   } as unknown as JobLeaseQueue;
   const reconciler = {
-    reconcile: vi.fn(async () => ({
-      inspectedArtifacts: 0,
-      missingArtifacts: 0,
-      removedArtifacts: 0,
-      removedOrphanObjects: 0,
-      removedAttemptWorkspaces: 0,
-      protectedActiveAttempts: 0
-    })),
+    reconcile: vi.fn(async () => {
+      if (overrides.reconciliationFails) throw new Error("reconciliation failure");
+      return {
+        inspectedArtifacts: 0,
+        missingArtifacts: 0,
+        removedArtifacts: 0,
+        removedOrphanObjects: 0,
+        removedAttemptWorkspaces: 0,
+        protectedActiveAttempts: 0
+      };
+    }),
     cleanupJobArtifacts: vi.fn()
   } as unknown as MediaStorageReconciler;
   const storageHealth: MediaStorageHealth = {
@@ -68,7 +81,11 @@ function dependencies(overrides: { healthy?: boolean; leader?: boolean } = {}) {
   };
 }
 
-function coordinator(deps: ReturnType<typeof dependencies>, selectedLogger: WorkerLogger = logger) {
+function coordinator(
+  deps: ReturnType<typeof dependencies>,
+  selectedLogger: WorkerLogger = logger,
+  signals?: OperationalSignals
+) {
   return createMediaLifecycleCoordinator({
     enabled: true,
     election: deps.election,
@@ -84,7 +101,8 @@ function coordinator(deps: ReturnType<typeof dependencies>, selectedLogger: Work
     expirationBatchSize: 10,
     expiredRetentionSeconds: 60,
     random: () => 0.5,
-    now: () => Date.UTC(2026, 0, 1)
+    now: () => Date.UTC(2026, 0, 1),
+    signals
   });
 }
 
@@ -126,6 +144,54 @@ describe("media lifecycle coordinator", () => {
         fields: { reason: "shutdown" }
       })
     ]));
+  });
+
+  it("emits bounded canonical leadership, recovery, reconciliation and cleanup signals", async () => {
+    const deps = dependencies();
+    const records: Array<Record<string, unknown>> = [];
+    const observability = await createProcessObservability({ NODE_ENV: "test" }, "worker", {
+      metadata: { processInstanceId: () => "7".repeat(32) },
+      logger: { sink: (record) => { records.push(record as Record<string, unknown>); } }
+    });
+    const lifecycle = coordinator(deps, logger, observability.signals);
+    await lifecycle.startup();
+    await lifecycle.stop();
+    expect(records.map((record) => record.event)).toEqual(expect.arrayContaining([
+      "lifecycle.leader_acquired",
+      "recovery.started",
+      "recovery.completed",
+      "reconciliation.started",
+      "reconciliation.completed",
+      "cleanup.started",
+      "cleanup.completed",
+      "lifecycle.leader_lost"
+    ]));
+    const metrics = observability.metrics.registry.render();
+    expect(metrics).toContain("maintenance_leader 0");
+    expect(metrics).toContain('maintenance_last_success_timestamp{operation="recovery"}');
+    expect(metrics).toContain('maintenance_last_success_timestamp{operation="reconciliation"}');
+    expect(metrics).toContain('cleanup_last_success_timestamp ');
+    expect(JSON.stringify(records)).not.toContain("job_");
+    observability.close();
+  });
+
+  it.each([
+    ["reconciliation", { reconciliationFails: true }, "reconciliation.failed", "reconciliation_failures_total"],
+    ["cleanup", { cleanupFails: true }, "cleanup.failed", "cleanup_failures_total"]
+  ] as const)("records a bounded %s failure without starting another authority", async (_name, overrides, event, metric) => {
+    const deps = dependencies(overrides);
+    const records: Array<Record<string, unknown>> = [];
+    const observability = await createProcessObservability({ NODE_ENV: "test" }, "worker", {
+      metadata: { processInstanceId: () => "a".repeat(32) },
+      logger: { sink: (record) => { records.push(record as Record<string, unknown>); } }
+    });
+    const lifecycle = coordinator(deps, logger, observability.signals);
+    await expect(lifecycle.startup()).rejects.toThrow("startup recovery failed");
+    await lifecycle.stop();
+    expect(records.map((record) => record.event)).toContain(event);
+    expect(observability.metrics.registry.render()).toContain(`${metric}{reasonCategory="internal"} 1`);
+    expect(deps.election.tryAcquire).toHaveBeenCalledTimes(1);
+    observability.close();
   });
 
   it("allows a healthy follower to process but never runs destructive maintenance", async () => {

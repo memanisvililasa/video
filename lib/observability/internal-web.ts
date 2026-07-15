@@ -69,7 +69,9 @@ export async function handleInternalWebRequest(
     return jsonResponse(503, Object.freeze({ status: "not_ready", reason: result.reasonCategory }), head);
   }
   try {
-    const body = (await getWebObservability()).metrics.registry.render();
+    const observability = await getWebObservability();
+    await observability.collectMetrics();
+    const body = observability.metrics.registry.render();
     return new Response(head ? null : body, {
       status: 200,
       headers: {

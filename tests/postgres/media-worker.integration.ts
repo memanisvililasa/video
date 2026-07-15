@@ -11,6 +11,7 @@ import { createDurableMediaFileDelivery } from "@/lib/storage/file-delivery";
 import { API_ERROR_CODES } from "@/lib/types";
 import { createProductionMediaWorkerRuntime, type ProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import type { MediaWorkerProcessor } from "@/lib/worker/processor";
+import { createProcessObservability, type ProcessObservability } from "@/lib/observability/runtime";
 import { applyMigrations } from "../../scripts/postgres-migrations.mjs";
 import {
   provisionDurableVolumeTestRoot,
@@ -26,6 +27,8 @@ const quotedSchema = `"${schema}"`;
 let bootstrap: InstanceType<typeof Client>;
 let storageRoot: string | null = null;
 let runtime: ProductionMediaWorkerRuntime | null = null;
+let observability: ProcessObservability | null = null;
+let operationalRecords: Array<Record<string, unknown>> = [];
 
 const probeOutput = JSON.stringify({
   streams: [
@@ -131,10 +134,16 @@ async function enqueue(jobId: string): Promise<void> {
 async function createRuntime(processor?: MediaWorkerProcessor): Promise<ProductionMediaWorkerRuntime> {
   storageRoot = await mkdtemp(path.join(os.tmpdir(), "videosave-worker-integration-"));
   await provisionDurableVolumeTestRoot(storageRoot);
+  operationalRecords = [];
+  observability = await createProcessObservability(environment(storageRoot), "worker", {
+    metadata: { processInstanceId: () => "6".repeat(32) },
+    logger: { sink: (record) => { operationalRecords.push(record as Record<string, unknown>); } }
+  });
   runtime = createProductionMediaWorkerRuntime(environment(storageRoot), {
     postgresSchema: schema,
     runProcess: fakeProcessRunner,
     getExtractor: () => fakeExtractor,
+    observability,
     ...(processor ? { processor } : {})
   });
   await runtime.readiness();
@@ -162,6 +171,8 @@ beforeEach(async () => {
 afterEach(async () => {
   await runtime?.close().catch(() => undefined);
   runtime = null;
+  observability?.close();
+  observability = null;
   if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
   storageRoot = null;
 });
@@ -211,6 +222,25 @@ describe("standalone media worker with PostgreSQL and durable volume", () => {
     await waitFor(async () => (await current.repository.get("job_worker_ready"))?.status === "ready");
     const job = await current.repository.get("job_worker_ready");
     expect(job).toMatchObject({ status: "ready", progress: 100, leaseOwner: null });
+    await observability?.collectMetrics();
+    const metrics = observability?.metrics.registry.render() ?? "";
+    expect(metrics).toContain('jobs_submitted_total{preset="original"} 1');
+    expect(metrics).toContain('jobs_completed_total{preset="original"} 1');
+    expect(metrics).toContain("queue_depth 0");
+    expect(metrics).toContain("running_jobs 0");
+    expect(metrics).toContain("storage_up 1");
+    expect(metrics).not.toContain("job_worker_ready");
+    expect(operationalRecords.map((record) => record.event)).toEqual(expect.arrayContaining([
+      "job.queued",
+      "job.claimed",
+      "download.started",
+      "download.completed",
+      "probe.started",
+      "artifact.staged",
+      "artifact.published",
+      "job.completed"
+    ]));
+    expect(JSON.stringify(operationalRecords)).not.toContain("https://media.example.test");
     const fileId = job?.finalMetadata?.fileId;
     if (!fileId) throw new Error("Expected final file ID.");
     const delivery = createDurableMediaFileDelivery({ artifacts: current.artifacts, storage: current.storage });
@@ -238,6 +268,7 @@ describe("standalone media worker with PostgreSQL and durable volume", () => {
     await current.queue.requestCancellation("job_worker_cancel");
     await waitFor(async () => observedAbort, 3_000);
     expect((await current.repository.get("job_worker_cancel"))?.status).toBe("cancelled");
+    expect(operationalRecords.map((record) => record.event)).toContain("job.cancelled");
     await current.shutdown();
     await running;
   });
@@ -257,6 +288,9 @@ describe("standalone media worker with PostgreSQL and durable volume", () => {
     await waitFor(async () => (await current.repository.get("job_worker_retry"))?.status === "queued", 8_000);
     expect(await current.repository.get("job_worker_retry")).toMatchObject({ status: "queued", retryCount: 1 });
     expect(current.lifecycle.status().lastSuccessfulRecoveryAt).not.toBeNull();
+    expect(operationalRecords.map((record) => record.event)).toEqual(expect.arrayContaining([
+      "job.retry_scheduled", "recovery.started", "recovery.completed"
+    ]));
     await current.shutdown();
     await running;
   });
@@ -272,6 +306,7 @@ describe("standalone media worker with PostgreSQL and durable volume", () => {
     expect(await current.repository.get("job_worker_terminal")).toMatchObject({
       canonicalError: { code: API_ERROR_CODES.INVALID_MEDIA_FILE }
     });
+    expect(operationalRecords.map((record) => record.event)).toContain("job.failed");
     await current.shutdown();
     await running;
   });

@@ -8,6 +8,10 @@ const serverRoot = path.join(root, ".next/server");
 const forbidden = Object.freeze([
   "createOperationalLogger",
   "http_requests_total",
+  "jobs_submitted_total",
+  "maintenance_leader",
+  "createPostgresMetricsCollector",
+  "createStorageMetricsCollector",
   "processInstanceId",
   "WORKER_OBSERVABILITY_HOST",
   "/internal/observability/",
@@ -35,9 +39,14 @@ for (const filename of await files(staticRoot)) {
 }
 
 let serverContainsMetrics = false;
+let serverContainsOperationalMetrics = false;
 for (const filename of await files(serverRoot)) {
   const content = await readFile(filename, "utf8");
   if (content.includes("http_requests_total") && content.includes("process_up")) serverContainsMetrics = true;
+  if (content.includes("jobs_submitted_total") && content.includes("maintenance_leader")) {
+    serverContainsOperationalMetrics = true;
+  }
 }
 if (!serverContainsMetrics) throw new Error("Server build does not contain required observability instrumentation.");
+if (!serverContainsOperationalMetrics) throw new Error("Server build does not contain Phase A operational metrics.");
 console.info("Observability browser bundle audit passed.");

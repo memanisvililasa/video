@@ -9,6 +9,12 @@ export interface WorkerLogger {
   error(event: string, fields?: WorkerLogFields): void;
 }
 
+export const NOOP_WORKER_LOGGER: WorkerLogger = Object.freeze({
+  info() {},
+  warn() {},
+  error() {}
+});
+
 const SAFE_EVENT = /^[a-z][a-z0-9_.-]{0,63}$/;
 const SAFE_FIELD = /^[a-z][a-zA-Z0-9_]{0,47}$/;
 

@@ -1,5 +1,9 @@
 import "server-only";
 import { parseObservabilityConfig, type ObservabilityConfig } from "@/lib/config/env";
+import {
+  createMetricsCollectorCoordinator,
+  type MetricsCollector
+} from "@/lib/observability/collectors";
 import type { ObservedProcessRole, ProcessMetadata } from "@/lib/observability/contract";
 import { createCoreMetrics, type CoreMetrics } from "@/lib/observability/core-metrics";
 import {
@@ -8,12 +12,18 @@ import {
   type OperationalLogger
 } from "@/lib/observability/logger";
 import { createProcessMetadata, type CreateProcessMetadataOptions } from "@/lib/observability/metadata";
+import { registerOperationalMetrics, type OperationalMetrics } from "@/lib/observability/operational-metrics";
+import { createOperationalSignals, type OperationalSignals } from "@/lib/observability/signals";
 
 export type ProcessObservability = Readonly<{
   config: ObservabilityConfig;
   metadata: ProcessMetadata;
   logger: OperationalLogger;
   metrics: CoreMetrics;
+  operationalMetrics: OperationalMetrics;
+  signals: OperationalSignals;
+  addCollector(collector: MetricsCollector): () => void;
+  collectMetrics(): Promise<void>;
   close(): void;
 }>;
 
@@ -39,15 +49,25 @@ export async function createProcessObservability(
     maxResponseBytes: config.metricsResponseMaxBytes,
     now: options.now
   });
+  const operationalMetrics = registerOperationalMetrics(metrics, metadata.processRole);
+  const signals = createOperationalSignals(logger, operationalMetrics);
+  const collectors = createMetricsCollectorCoordinator({
+    timeoutMs: Math.min(config.readinessTimeoutMs, 2_000)
+  });
   let closed = false;
   return Object.freeze({
     config,
     metadata,
     logger,
     metrics,
+    operationalMetrics,
+    signals,
+    addCollector: collectors.add,
+    collectMetrics: collectors.collect,
     close() {
       if (closed) return;
       closed = true;
+      collectors.close();
       metrics.setProcessUp(false);
     }
   });

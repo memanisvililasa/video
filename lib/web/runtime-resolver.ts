@@ -63,8 +63,13 @@ async function createLocalWebRuntime(): Promise<WebApiRuntime> {
 async function createPersistentWebRuntime(
   source: Readonly<Record<string, string | undefined>>
 ): Promise<WebApiRuntime> {
-  const { createProductionWebRuntime } = await import("@/lib/web/production-runtime");
-  const runtime = createProductionWebRuntime(source);
+  const [{ createProductionWebRuntime }, { getWebObservability }] = await Promise.all([
+    import("@/lib/web/production-runtime"),
+    import("@/lib/observability/web")
+  ]);
+  const runtime = createProductionWebRuntime(source, {
+    observability: await getWebObservability(source)
+  });
   try {
     await runtime.readiness();
   } catch (error) {

@@ -20,6 +20,10 @@ import {
 import { createDurableMediaFileDelivery, type MediaFileDelivery } from "@/lib/storage/file-delivery";
 import type { MediaArtifactRepository } from "@/lib/storage/media-artifact-repository";
 import { createPostgresMediaArtifactRuntime } from "@/lib/storage/postgres/artifact-repository";
+import { observeJobLeaseQueue } from "@/lib/observability/job-queue-observer";
+import { createPostgresMetricsCollector } from "@/lib/observability/postgres-collector";
+import type { ProcessObservability } from "@/lib/observability/runtime";
+import { createStorageMetricsCollector } from "@/lib/observability/storage-collector";
 
 export type ProductionWebRuntime = Readonly<{
   role: "web";
@@ -39,6 +43,7 @@ export type CreateProductionWebRuntimeOptions = Readonly<{
   /** Internally generated integration-test schema; never pass request data. */
   postgresSchema?: string;
   createJobId?: () => string;
+  observability?: ProcessObservability;
 }>;
 
 /**
@@ -55,7 +60,7 @@ export function createProductionWebRuntime(
     applicationName: "videosave-web"
   });
   const repository = createPostgresJobRepository({ database: postgres.pool });
-  const queue = createPostgresJobLeaseQueue({
+  const baseQueue = createPostgresJobLeaseQueue({
     database: postgres.pool,
     // Web only calls enqueue/cancellation. Claim/recovery remain worker-only;
     // required constructor values are inert defaults in this process role.
@@ -64,6 +69,9 @@ export function createProductionWebRuntime(
     terminalTtlMs: config.storage.finalTtlSeconds * 1_000,
     activeTtlSeconds: config.queue.activeTtlSeconds
   });
+  const queue = options.observability
+    ? observeJobLeaseQueue(baseQueue, options.observability.signals)
+    : baseQueue;
   const artifactRuntime = createPostgresMediaArtifactRuntime({ pool: postgres.pool });
   const storage = createReadonlyDurableVolumeStorage(
     config.storage.root,
@@ -79,6 +87,17 @@ export function createProductionWebRuntime(
     storage
   });
   let closed = false;
+  const removeCollectors = options.observability ? [
+    options.observability.addCollector(createPostgresMetricsCollector({
+      pool: postgres.pool,
+      signals: options.observability.signals
+    })),
+    options.observability.addCollector(createStorageMetricsCollector({
+      root: config.storage.root,
+      authorityId: config.storage.authorityId,
+      signals: options.observability.signals
+    }))
+  ] : [];
 
   async function readiness(): Promise<void> {
     if (closed) throw new Error("Production web runtime is closed.");
@@ -91,6 +110,7 @@ export function createProductionWebRuntime(
   async function close(): Promise<void> {
     if (closed) return;
     closed = true;
+    for (const remove of removeCollectors) remove();
     await postgres.close();
   }
 

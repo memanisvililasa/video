@@ -7,6 +7,7 @@ import {
   LOG_LEVELS,
   MEDIA_STAGES,
   OUTCOMES,
+  PROCESSING_PRESETS,
   isOperationalEvent,
   isReasonCode,
   type OperationalErrorCategory,
@@ -22,7 +23,7 @@ import { classifyError, redactValue } from "@/lib/observability/redaction";
 
 const MAX_LOG_LINE_BYTES = 8 * 1024;
 const PUBLIC_JOB_ID = /^job_[a-zA-Z0-9_-]{1,124}$/;
-const SAFE_PRESETS = new Set(["video", "audio", "mp4", "webm", "mp3", "m4a", "unknown"]);
+const SAFE_PRESETS = new Set<string>(PROCESSING_PRESETS);
 const SAFE_PROVIDERS = new Set(["youtube", "vimeo", "direct", "generic", "unknown"]);
 
 export type OperationalLogFields = Readonly<{

@@ -8,6 +8,8 @@ import type {
 import type { MediaStorageHealth } from "@/lib/storage/media-storage";
 import type { MediaStorageReconciler } from "@/lib/storage/reconciliation";
 import type { WorkerLogger } from "@/lib/worker/logger";
+import type { OperationalSignals } from "@/lib/observability/signals";
+import { safeSignalMetric } from "@/lib/observability/signals";
 
 export type MediaLifecycleCoordinatorStatus = Readonly<{
   running: boolean;
@@ -47,6 +49,7 @@ export type CreateMediaLifecycleCoordinatorOptions = Readonly<{
   expiredRetentionSeconds: number;
   random?: () => number;
   now?: () => number;
+  signals?: OperationalSignals;
 }>;
 
 function bounded(name: string, value: number, minimum: number, maximum: number): number {
@@ -113,7 +116,13 @@ export function createMediaLifecycleCoordinator(
     const owned = leadership;
     if (!owned) return;
     leadership = null;
+    safeSignalMetric(() => options.signals?.metrics.setMaintenanceLeader(false));
     await owned.release().catch(() => undefined);
+    options.signals?.emit(warning ? "warn" : "info", "lifecycle.leader_lost", {
+      outcome: warning ? "failure" : "success",
+      reasonCode: warning ? "maintenance_failed" : "none",
+      errorCategory: warning ? "database" : undefined
+    });
     const event = "worker.lifecycle.leadership-lost";
     if (warning) options.logger.warn(event, { reason });
     else options.logger.info(event, { reason });
@@ -131,7 +140,14 @@ export function createMediaLifecycleCoordinator(
     try {
       leadership = await options.election.tryAcquire();
       markDatabase(true);
-      if (leadership) options.logger.info("worker.lifecycle.leadership-acquired");
+      if (leadership) {
+        safeSignalMetric(() => options.signals?.metrics.setMaintenanceLeader(true));
+        options.signals?.emit("info", "lifecycle.leader_acquired", {
+          outcome: "success",
+          reasonCode: "none"
+        });
+        options.logger.info("worker.lifecycle.leadership-acquired");
+      }
       return leadership !== null;
     } catch {
       markDatabase(false);
@@ -156,10 +172,33 @@ export function createMediaLifecycleCoordinator(
   async function runRecovery(fullSweep: boolean): Promise<boolean> {
     if (!(await verifyLeadership())) return false;
     let phase = "expiration";
+    let recoveryStartedAt: number | null = options.signals?.maintenanceStarted("recovery") ?? null;
+    let reconciliationStartedAt: number | null = null;
+    let cleanupStartedAt: number | null = null;
     try {
       const overdue = await options.maintenance.expireOverdueActiveJobs(expirationBatchSize);
       phase = "lease-recovery";
       const recovered = await options.queue.recoverExpiredLeases();
+      for (const record of overdue) {
+        options.signals?.emit("info", "job.expired", {
+          outcome: "success",
+          reasonCode: "none",
+          publicJobId: record.jobId,
+          preset: options.signals.preset(record.processingPreset)
+        });
+      }
+      safeSignalMetric(() => options.signals?.metrics.jobsExpired(overdue.length));
+      safeSignalMetric(() => options.signals?.metrics.recoveryActions("recovery", "success", recovered.requeued.length));
+      safeSignalMetric(() => options.signals?.metrics.recoveryActions("recovery", "failure", recovered.failed.length));
+      if (recoveryStartedAt !== null) {
+        options.signals?.maintenanceCompleted("recovery", recoveryStartedAt, {
+          scanned: overdue.length + recovered.requeued.length + recovered.failed.length,
+          recovered: recovered.requeued.length,
+          expired: overdue.length,
+          failures: recovered.failed.length
+        });
+        recoveryStartedAt = null;
+      }
       lastRecoveryMs = now();
       lastSuccessfulRecoveryAt = iso();
       markDatabase(true);
@@ -170,11 +209,26 @@ export function createMediaLifecycleCoordinator(
       let deleted = 0;
       if (healthy) {
         phase = "reconciliation";
+        reconciliationStartedAt = options.signals?.maintenanceStarted("reconciliation") ?? null;
         const report = await options.reconciler.reconcile();
+        if (reconciliationStartedAt !== null) {
+          options.signals?.maintenanceCompleted("reconciliation", reconciliationStartedAt, {
+            scanned: report.inspectedArtifacts,
+            removed: report.removedArtifacts + report.removedOrphanObjects + report.removedAttemptWorkspaces,
+            skippedActive: report.protectedActiveAttempts,
+            orphanRecords: report.missingArtifacts,
+            orphanFiles: report.removedOrphanObjects
+          });
+          reconciliationStartedAt = null;
+        }
+        safeSignalMetric(() => options.signals?.metrics.setOrphanArtifacts(
+          report.missingArtifacts + report.removedOrphanObjects
+        ));
         lastReconciliationMs = now();
         lastSuccessfulReconciliationAt = iso();
         if (!(await verifyLeadership())) return false;
         phase = "terminal-expiration";
+        cleanupStartedAt = options.signals?.maintenanceStarted("cleanup") ?? null;
         const terminal = await options.maintenance.expireTerminalJobs(expirationBatchSize);
         expired = terminal.length;
         phase = "retention";
@@ -182,6 +236,24 @@ export function createMediaLifecycleCoordinator(
           expirationBatchSize,
           expiredRetentionSeconds
         );
+        for (const record of terminal) {
+          options.signals?.emit("info", "job.expired", {
+            outcome: "success",
+            reasonCode: "none",
+            publicJobId: record.jobId,
+            preset: options.signals.preset(record.processingPreset)
+          });
+        }
+        safeSignalMetric(() => options.signals?.metrics.jobsExpired(terminal.length));
+        safeSignalMetric(() => options.signals?.metrics.recoveryActions("cleanup", "success", terminal.length + deleted));
+        if (cleanupStartedAt !== null) {
+          options.signals?.maintenanceCompleted("cleanup", cleanupStartedAt, {
+            scanned: terminal.length,
+            expired: terminal.length,
+            removed: deleted
+          });
+          cleanupStartedAt = null;
+        }
         lastSuccessfulExpirationAt = iso();
         options.logger.info("worker.lifecycle.reconciled", {
           inspected: report.inspectedArtifacts,
@@ -204,6 +276,17 @@ export function createMediaLifecycleCoordinator(
       });
       return healthy && databaseHealthy;
     } catch {
+      const operation = phase === "reconciliation"
+        ? "reconciliation"
+        : phase === "terminal-expiration" || phase === "retention"
+          ? "cleanup"
+          : "recovery";
+      const startedAt = operation === "reconciliation"
+        ? reconciliationStartedAt
+        : operation === "cleanup"
+          ? cleanupStartedAt
+          : recoveryStartedAt;
+      if (startedAt !== null) options.signals?.maintenanceFailed(operation, startedAt ?? now(), "internal");
       markDatabase(false);
       options.logger.warn("worker.lifecycle.sweep-failed", { phase });
       if (!(await leadership?.verify().catch(() => false))) {

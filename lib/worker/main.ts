@@ -8,7 +8,6 @@ import {
 } from "@/lib/observability/worker-listener";
 import { classifyError } from "@/lib/observability/redaction";
 import { createProductionMediaWorkerRuntime } from "@/lib/worker/composition";
-import { createStructuredWorkerLogger } from "@/lib/worker/logger";
 
 export async function runMediaWorkerMain(
   argv: readonly string[] = process.argv.slice(2),
@@ -19,7 +18,6 @@ export async function runMediaWorkerMain(
     return 1;
   }
   const checkOnly = argv[0] === "--check";
-  const logger = createStructuredWorkerLogger();
   let observability: ProcessObservability | null = null;
   let listener: WorkerObservabilityListener | null = null;
   let listenerBound = false;
@@ -32,7 +30,7 @@ export async function runMediaWorkerMain(
     observability = await createProcessObservability(source, "worker");
     observability.logger.info("process.starting", { outcome: "success", reasonCode: "none" });
     const listenerConfig = parseWorkerObservabilityConfig(source);
-    runtime = createProductionMediaWorkerRuntime(source, { logger });
+    runtime = createProductionMediaWorkerRuntime(source, { observability });
     const readiness = createReadinessProbe({
       check: runtime.readiness,
       timeoutMs: observability.config.readinessTimeoutMs,
