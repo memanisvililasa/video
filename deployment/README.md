@@ -13,7 +13,7 @@ Internet -> Nginx/TLS (80/443) -> 127.0.0.1:3000 standalone web
                                 FFmpeg/ffprobe       jobs + published
 ```
 
-Phase A поддерживает один controlled Linux host. Nginx — единственный public ingress; web слушает только loopback; worker не имеет HTTP listener. PostgreSQL находится локально либо за private/managed boundary. Web, worker и elected lifecycle coordinator используют один PostgreSQL и один POSIX volume. Journald — минимальный log transport. Multi-host, autoscaling, Redis и object storage не поддерживаются.
+Phase A поддерживает один controlled Linux host. Nginx — единственный public ingress; web слушает только loopback; worker имеет только отдельный loopback observability listener. PostgreSQL находится локально либо за private/managed boundary. Web, worker и elected lifecycle coordinator используют один PostgreSQL и один POSIX volume. Journald — transport для line-oriented JSON operational logs. Multi-host, autoscaling, Redis и object storage не поддерживаются.
 
 ## Users, groups и layout
 
@@ -207,6 +207,6 @@ Deployment host повторяет versions/codecs, `systemd-analyze verify`, re
 
 ## Minimal logs и limitations
 
-Journald принимает release/role startup, readiness outcome, migration mismatch, DB/storage availability, worker graceful shutdown и sanitised `worker.lifecycle.leadership-acquired`/`worker.lifecycle.leadership-lost` events. Nginx хранит request ID/status/upstream outcome. Запрещены DB URLs, full source URLs, payload, absolute storage paths, SQL, credentials и full FFmpeg commands. Metrics/alerts/dashboards относятся к 5.9.9.
+Journald принимает bounded line-oriented JSON с release/role/request correlation, startup/readiness outcome и graceful shutdown. Nginx хранит отдельный request ID/status/upstream outcome. Web endpoints `/internal/observability/live`, `/internal/observability/ready` и `/internal/observability/metrics` доступны только на loopback listener и Nginx всегда отвечает на этот prefix `404`; worker публикует те же read-only paths только на `WORKER_OBSERVABILITY_HOST:WORKER_OBSERVABILITY_PORT`. `live` не обращается к DB/storage, `ready` переиспользует canonical readiness, а `metrics` не меняет runtime state. Запрещены DB URLs, full source URLs, payload, absolute storage paths, SQL, credentials, full FFmpeg commands и raw stderr. Journald retention/rate limiting и scraping остаются host/operator responsibility; application log files не создаются. Alerts, dashboards и external collectors относятся к 5.9.9B/5.9.9C.
 
 Phase A остаётся single-host/single-volume failure domain с manual first approval. Этот документ не утверждает, что production deployment выполнен.

@@ -4,6 +4,11 @@ import { parseJobId } from "@/lib/api/media-job-validation";
 import { API_ERROR_MESSAGES, API_ERROR_STATUS, AppError } from "@/lib/errors";
 import type { MediaJobSnapshot } from "@/lib/jobs/types";
 import type { RateLimitKeyInput, RateLimitResult } from "@/lib/security/rate-limit";
+import {
+  NOOP_HTTP_OBSERVABILITY,
+  type HttpObservability
+} from "@/lib/observability/http-observer";
+import { safeReasonFromError } from "@/lib/observability/logger";
 import { API_ERROR_CODES, type ApiErrorCode } from "@/lib/types";
 
 const NO_STORE_HEADERS = Object.freeze({ "Cache-Control": "no-store" });
@@ -18,6 +23,7 @@ export type MediaJobRouteDependencies = Readonly<{
   cancelDownloadJob: (jobId: string) => Promise<MediaJobSnapshot>;
   serializeMediaJobSnapshot: (snapshot: MediaJobSnapshot) => MediaJobApiSnapshot;
   checkRateLimit: (input: RateLimitKeyInput) => RateLimitResult;
+  observability?: HttpObservability;
   now?: () => number;
 }>;
 
@@ -67,33 +73,62 @@ async function getJobId(context: MediaJobRouteContext): Promise<string> {
 
 export function createMediaJobRouteHandlers(dependencies: MediaJobRouteDependencies) {
   const now = dependencies.now ?? Date.now;
+  const observability = dependencies.observability ?? NOOP_HTTP_OBSERVABILITY;
 
   async function GET(request: NextRequest, context: MediaJobRouteContext): Promise<NextResponse> {
-    try {
-      const rateLimit = dependencies.checkRateLimit({ bucket: "job-status", headers: request.headers });
-      if (!rateLimit.ok) return rateLimitResponse(rateLimit);
+    return observability.run(request, "job_status", "GET", async (observation) => {
+      try {
+        const rateLimit = dependencies.checkRateLimit({ bucket: "job-status", headers: request.headers });
+        if (!rateLimit.ok) return rateLimitResponse(rateLimit);
 
-      const jobId = await getJobId(context);
-      const snapshot = await dependencies.getDownloadJob(jobId);
-      assertJobIsAvailable(snapshot, now());
-      return successResponse(dependencies.serializeMediaJobSnapshot(snapshot));
-    } catch (error) {
-      return errorResponse(error);
-    }
+        const jobId = await getJobId(context);
+        const snapshot = await dependencies.getDownloadJob(jobId);
+        assertJobIsAvailable(snapshot, now());
+        observation.withPublicJobId(jobId, () => {
+          observation.log("debug", "job.status.read", {
+            outcome: "success",
+            reasonCode: "none"
+          });
+        });
+        return successResponse(dependencies.serializeMediaJobSnapshot(snapshot));
+      } catch (error) {
+        const classified = safeReasonFromError(error);
+        observation.log("debug", "job.status.read", {
+          outcome: classified.errorCategory === "internal" ? "failure" : "rejected",
+          reasonCode: classified.reasonCode,
+          errorCategory: classified.errorCategory
+        });
+        return errorResponse(error);
+      }
+    });
   }
 
   async function DELETE(request: NextRequest, context: MediaJobRouteContext): Promise<NextResponse> {
-    try {
-      const rateLimit = dependencies.checkRateLimit({ bucket: "job-cancel", headers: request.headers });
-      if (!rateLimit.ok) return rateLimitResponse(rateLimit);
+    return observability.run(request, "job_cancel", "DELETE", async (observation) => {
+      try {
+        const rateLimit = dependencies.checkRateLimit({ bucket: "job-cancel", headers: request.headers });
+        if (!rateLimit.ok) return rateLimitResponse(rateLimit);
 
-      const jobId = await getJobId(context);
-      const snapshot = await dependencies.cancelDownloadJob(jobId);
-      assertJobIsAvailable(snapshot, now());
-      return successResponse(dependencies.serializeMediaJobSnapshot(snapshot));
-    } catch (error) {
-      return errorResponse(error);
-    }
+        const jobId = await getJobId(context);
+        const snapshot = await dependencies.cancelDownloadJob(jobId);
+        assertJobIsAvailable(snapshot, now());
+        observation.withPublicJobId(jobId, () => {
+          observation.log("info", "job.cancel.requested", {
+            outcome: "success",
+            reasonCode: "none"
+          });
+        });
+        return successResponse(dependencies.serializeMediaJobSnapshot(snapshot));
+      } catch (error) {
+        const classified = safeReasonFromError(error);
+        observation.log(classified.errorCategory === "internal" ? "warn" : "info", "job.cancel.requested", {
+          outcome: classified.errorCategory === "internal" ? "failure" : "rejected",
+          reasonCode: classified.reasonCode,
+          errorCategory: classified.errorCategory
+        });
+        return errorResponse(error);
+      }
+    });
   }
 
   return Object.freeze({ GET, DELETE });

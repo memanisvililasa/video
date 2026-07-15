@@ -12,6 +12,7 @@ function fakeRuntime(role: "local" | "web"): WebApiRuntime {
       cancelDownloadJob: vi.fn() as never
     },
     files: { get: vi.fn() },
+    readiness: vi.fn(),
     close: vi.fn()
   };
 }

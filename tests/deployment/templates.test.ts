@@ -48,6 +48,9 @@ describe("Phase A deployment templates", () => {
     expect(nginx).not.toContain("$proxy_add_x_forwarded_for");
     expect(nginx).not.toMatch(/\b(?:alias|root)\s+\/var\/lib\/videosave\/media/);
     expect(nginx).not.toContain("limit_except");
+    const internal = nginx.match(/location \^~ \/internal\/observability\/ \{[\s\S]*?\n  \}/)?.[0] ?? "";
+    expect(internal).toContain("return 404;");
+    expect(internal).not.toContain("proxy_pass");
   });
 
   it("keeps PostgreSQL runtime roles non-owning and audit SQL read-only", async () => {

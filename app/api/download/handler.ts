@@ -9,6 +9,11 @@ import { serializeCreateDownloadJobData } from "@/lib/api/media-job-serializer";
 import { parseCreateDownloadJobRequest } from "@/lib/api/media-job-validation";
 import { API_ERROR_MESSAGES, API_ERROR_STATUS, AppError } from "@/lib/errors";
 import type { EnqueuedMediaJob } from "@/lib/jobs/types";
+import {
+  NOOP_HTTP_OBSERVABILITY,
+  type HttpObservability
+} from "@/lib/observability/http-observer";
+import { safeReasonFromError } from "@/lib/observability/logger";
 import type { RateLimitKeyInput, RateLimitResult } from "@/lib/security/rate-limit";
 import { API_ERROR_CODES, type ApiErrorCode } from "@/lib/types";
 
@@ -18,6 +23,7 @@ const NO_STORE_HEADERS = Object.freeze({ "Cache-Control": "no-store" });
 export type DownloadPostDependencies = Readonly<{
   enqueueDownloadJob: (request: CreateDownloadJobRequest) => EnqueuedMediaJob | Promise<EnqueuedMediaJob>;
   checkRateLimit: (input: RateLimitKeyInput) => RateLimitResult;
+  observability?: HttpObservability;
 }>;
 
 function invalidRequest(): AppError {
@@ -106,26 +112,46 @@ function errorResponse(error: unknown, headers?: HeadersInit): NextResponse<ApiF
 }
 
 export function createDownloadPostHandler(dependencies: DownloadPostDependencies) {
+  const observability = dependencies.observability ?? NOOP_HTTP_OBSERVABILITY;
   return async function POST(request: NextRequest): Promise<NextResponse> {
-    try {
-      const rateLimit = dependencies.checkRateLimit({ bucket: "download", headers: request.headers });
-      if (!rateLimit.ok) {
-        return errorResponse(new AppError(API_ERROR_CODES.RATE_LIMITED), {
-          "Retry-After": String(rateLimit.retryAfterSeconds)
+    return observability.run(request, "job_submit", "POST", async (observation) => {
+      try {
+        const rateLimit = dependencies.checkRateLimit({ bucket: "download", headers: request.headers });
+        if (!rateLimit.ok) {
+          observation.log("info", "job.submit.rejected", {
+            outcome: "rejected",
+            reasonCode: "rate_limited",
+            errorCategory: "validation"
+          });
+          return errorResponse(new AppError(API_ERROR_CODES.RATE_LIMITED), {
+            "Retry-After": String(rateLimit.retryAfterSeconds)
+          });
+        }
+
+        const body = await parseRequestBody(request);
+        const enqueued = await dependencies.enqueueDownloadJob(body);
+        const data = serializeCreateDownloadJobData(enqueued.snapshot);
+        const response: ApiSuccess<CreateDownloadJobData> = Object.freeze({ ok: true, data });
+        observation.withPublicJobId(enqueued.snapshot.jobId, () => {
+          observation.log("info", "job.submit.accepted", {
+            outcome: "success",
+            reasonCode: "none"
+          });
         });
+
+        return NextResponse.json(response, {
+          status: 202,
+          headers: NO_STORE_HEADERS
+        });
+      } catch (error) {
+        const classified = safeReasonFromError(error);
+        observation.log(classified.errorCategory === "internal" ? "warn" : "info", "job.submit.rejected", {
+          outcome: classified.errorCategory === "internal" ? "failure" : "rejected",
+          reasonCode: classified.reasonCode,
+          errorCategory: classified.errorCategory
+        });
+        return errorResponse(error);
       }
-
-      const body = await parseRequestBody(request);
-      const enqueued = await dependencies.enqueueDownloadJob(body);
-      const data = serializeCreateDownloadJobData(enqueued.snapshot);
-      const response: ApiSuccess<CreateDownloadJobData> = Object.freeze({ ok: true, data });
-
-      return NextResponse.json(response, {
-        status: 202,
-        headers: NO_STORE_HEADERS
-      });
-    } catch (error) {
-      return errorResponse(error);
-    }
+    });
   };
 }

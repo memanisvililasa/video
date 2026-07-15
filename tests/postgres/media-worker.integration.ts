@@ -172,6 +172,20 @@ afterAll(async () => {
 });
 
 describe("standalone media worker with PostgreSQL and durable volume", () => {
+  it("fails readiness when the configured FFmpeg executable is missing", async () => {
+    storageRoot = await mkdtemp(path.join(os.tmpdir(), "videosave-worker-integration-"));
+    await provisionDurableVolumeTestRoot(storageRoot);
+    runtime = createProductionMediaWorkerRuntime({
+      ...environment(storageRoot),
+      FFMPEG_PATH: path.join(storageRoot, "missing-ffmpeg")
+    }, {
+      postgresSchema: schema,
+      runProcess: fakeProcessRunner,
+      getExtractor: () => fakeExtractor
+    });
+    await expect(runtime.readiness()).rejects.toBeDefined();
+  });
+
   it("uses the exact shared migration checksum contract", async () => {
     const original = await bootstrap.query(
       "SELECT checksum FROM _videosave_migrations WHERE version = '004'"

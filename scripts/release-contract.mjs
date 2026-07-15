@@ -364,6 +364,7 @@ export async function verifyReleaseRoot(root, options = {}) {
     RELEASE_ENTRYPOINTS.productionSmoke,
     RELEASE_ENTRYPOINTS.releaseVerify,
     "scripts/postgres-migration-catalog.mjs",
+    "scripts/operational-log.mjs",
     "tools/release-contract.mjs",
     RELEASE_MANIFEST_FILE,
     RELEASE_CHECKSUMS_FILE,
@@ -438,7 +439,7 @@ export async function verifyReleaseRoot(root, options = {}) {
   for (const file of files.filter((candidate) => candidate.relative.startsWith(".next/static/"))) {
     if (file.size > MAX_SCANNED_TEXT_BYTES) continue;
     const content = await readFile(file.absolute, "utf8");
-    if (/createProductionMediaWorkerRuntime|lib\/worker|node_modules\/pg|DATABASE_URL/.test(content)) {
+    if (/createProductionMediaWorkerRuntime|createOperationalLogger|http_requests_total|processInstanceId|WORKER_OBSERVABILITY_HOST|\/internal\/observability\/|lib\/worker|node_modules\/pg|DATABASE_URL/.test(content)) {
       throw releaseError(`Server-only module leaked into client assets: ${file.relative}`);
     }
   }

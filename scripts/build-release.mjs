@@ -219,6 +219,7 @@ export async function assembleRelease({
     cp(path.join(projectRoot, ".production-smoke-dist/main.mjs"), path.join(releaseRoot, "smoke/production-smoke.mjs")),
     cp(path.join(projectRoot, "scripts/postgres-migrations.mjs"), path.join(releaseRoot, "scripts/postgres-migrations.mjs")),
     cp(path.join(projectRoot, "scripts/postgres-migration-catalog.mjs"), path.join(releaseRoot, "scripts/postgres-migration-catalog.mjs")),
+    cp(path.join(projectRoot, "scripts/operational-log.mjs"), path.join(releaseRoot, "scripts/operational-log.mjs")),
     cp(path.join(projectRoot, "scripts/verify-release.mjs"), path.join(releaseRoot, "tools/verify-release.mjs")),
     cp(path.join(projectRoot, "scripts/release-contract.mjs"), path.join(releaseRoot, "tools/release-contract.mjs")),
     ...REQUIRED_MIGRATIONS.map((migration) => cp(

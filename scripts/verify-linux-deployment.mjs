@@ -97,11 +97,10 @@ async function httpsJson(port, method, pathname, headers = {}, host = "127.0.0.1
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
       response.on("end", () => {
-        try {
-          resolve({ status: response.statusCode, body: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-        } catch (error) {
-          reject(error);
-        }
+        const text = Buffer.concat(chunks).toString("utf8");
+        let body = text;
+        try { body = JSON.parse(text); } catch {}
+        resolve({ status: response.statusCode, body });
       });
     });
     request.once("timeout", () => request.destroy(new Error("Nginx integration request timed out.")));
@@ -260,6 +259,8 @@ async function verifyNginx(root) {
     });
     return withNginxProcess(child, async () => {
       await waitForNginx(httpsPort, child);
+      const internal = await httpsJson(httpsPort, "GET", "/internal/observability/metrics");
+      if (internal.status !== 404) throw new Error("Nginx exposed the internal observability prefix.");
       const redirect = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
         headers: { Host: "videosave.test" },
         redirect: "manual",

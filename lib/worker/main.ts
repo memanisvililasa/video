@@ -1,4 +1,12 @@
 import "server-only";
+import { parseWorkerObservabilityConfig } from "@/lib/config/env";
+import { createReadinessProbe } from "@/lib/observability/readiness-probe";
+import { createProcessObservability, type ProcessObservability } from "@/lib/observability/runtime";
+import {
+  createWorkerObservabilityListener,
+  type WorkerObservabilityListener
+} from "@/lib/observability/worker-listener";
+import { classifyError } from "@/lib/observability/redaction";
 import { createProductionMediaWorkerRuntime } from "@/lib/worker/composition";
 import { createStructuredWorkerLogger } from "@/lib/worker/logger";
 
@@ -12,25 +20,58 @@ export async function runMediaWorkerMain(
   }
   const checkOnly = argv[0] === "--check";
   const logger = createStructuredWorkerLogger();
+  let observability: ProcessObservability | null = null;
+  let listener: WorkerObservabilityListener | null = null;
+  let listenerBound = false;
   let runtime: ReturnType<typeof createProductionMediaWorkerRuntime> | null = null;
-  let started = false;
   let fatal = false;
   let signalCount = 0;
+  let stoppingLogged = false;
+  const startedAt = performance.now();
   try {
-    logger.info("worker.startup", { role: "worker" });
+    observability = await createProcessObservability(source, "worker");
+    observability.logger.info("process.starting", { outcome: "success", reasonCode: "none" });
+    const listenerConfig = parseWorkerObservabilityConfig(source);
     runtime = createProductionMediaWorkerRuntime(source, { logger });
-    await runtime.readiness();
+    const readiness = createReadinessProbe({
+      check: runtime.readiness,
+      timeoutMs: observability.config.readinessTimeoutMs,
+      metrics: observability.metrics,
+      logger: observability.logger
+    });
+    if (!checkOnly) {
+      listener = createWorkerObservabilityListener({
+        config: listenerConfig,
+        observability,
+        readiness
+      });
+      await listener.start();
+      listenerBound = true;
+    }
+    const readinessResult = await readiness.check();
+    if (!readinessResult.ready) throw new Error("Worker readiness failed.");
     if (checkOnly) {
-      logger.info("worker.readiness.ok");
+      observability.logger.info("process.ready", {
+        outcome: "success",
+        reasonCode: "none",
+        durationMs: performance.now() - startedAt
+      });
       return 0;
     }
 
     await runtime.startup();
-    started = true;
 
     const requestShutdown = (reason: string, force = false): void => {
       if (!runtime) return;
-      logger.warn("worker.shutdown.requested", { reason, force });
+      if (!stoppingLogged) {
+        stoppingLogged = true;
+        observability?.logger.info("process.stopping", {
+          outcome: "success",
+          reasonCode: reason === "unhandled" ? "internal_error" : "none",
+          metadata: { force }
+        });
+      }
+      void listener?.close().catch(() => { fatal = true; });
       void runtime.shutdown({ force }).catch(() => {
         fatal = true;
       });
@@ -47,7 +88,11 @@ export async function runMediaWorkerMain(
     process.on("SIGINT", onSignal);
     process.on("unhandledRejection", onUnhandled);
     process.on("uncaughtException", onUnhandled);
-    logger.info("worker.ready", { concurrency: runtime.config.workerConcurrency });
+    observability.logger.info("process.ready", {
+      outcome: "success",
+      reasonCode: "none",
+      durationMs: performance.now() - startedAt
+    });
     try {
       await runtime.run();
     } catch {
@@ -60,11 +105,32 @@ export async function runMediaWorkerMain(
       process.off("uncaughtException", onUnhandled);
     }
     return fatal ? 1 : 0;
-  } catch {
+  } catch (error) {
+    const classified = classifyError(error);
+    observability?.logger.error(error instanceof TypeError ? "config.invalid" : "process.not_ready", {
+      outcome: "failure",
+      reasonCode: error instanceof TypeError
+        ? "invalid_configuration"
+        : listener && !listenerBound
+          ? "listener_unavailable"
+          : classified.reasonCode,
+      errorCategory: classified.category === "validation" ? "configuration" : classified.category
+    });
     console.error("Media worker startup failed.");
     return 1;
   } finally {
+    if (observability && !stoppingLogged) {
+      stoppingLogged = true;
+      observability.logger.info("process.stopping", { outcome: "success", reasonCode: "none" });
+    }
+    await listener?.close().catch(() => undefined);
     await runtime?.close().catch(() => undefined);
-    if (started) logger.info("worker.shutdown.complete");
+    if (observability) {
+      observability.close();
+      observability.logger.info("process.stopped", {
+        outcome: fatal ? "failure" : "success",
+        reasonCode: fatal ? "internal_error" : "none"
+      });
+    }
   }
 }

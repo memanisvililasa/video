@@ -115,6 +115,8 @@ export async function verifyDeploymentTemplates() {
     "client_header_timeout 15s;",
     "proxy_connect_timeout 5s;",
     "proxy_buffering off;",
+    "location ^~ /internal/observability/ {",
+    "return 404;",
     "location ~ \"^/api/file/[A-Za-z0-9_-]{8,128}$\" {",
     "request_id=$request_id",
     "method=$request_method uri=$uri"
@@ -127,6 +129,9 @@ export async function verifyDeploymentTemplates() {
   assert(!/\b(?:alias|root)\s+\/var\/lib\/videosave\/media/.test(nginx), "Nginx must not expose media directly.");
   assert(!nginx.includes("limit_except"), "Nginx must not block API methods.");
   assert(!nginx.includes("proxy_set_header Upgrade"), "WebSocket behavior is out of scope.");
+  const internalLocation = nginx.match(/location \^~ \/internal\/observability\/ \{[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert(internalLocation.includes("return 404;") && !internalLocation.includes("proxy_pass"),
+    "Nginx must fail closed instead of proxying internal observability routes.");
 
   containsAll(roles, [
     "CREATE ROLE :\"migration_role\" LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION",
@@ -167,7 +172,18 @@ export async function verifyDeploymentTemplates() {
     containsAll(environment, ["MEDIA_STORAGE_AUTHORITY_ID=<32-lowercase-hex-authority-id>"], label);
     assert(!environment.includes("TEST_DATABASE_URL"), `${label} must not use test credentials.`);
   }
-  containsAll(webEnv, ["HOSTNAME=127.0.0.1", "TRUST_PROXY_MODE=nginx-single-host"], "web env");
+  containsAll(webEnv, [
+    "HOSTNAME=127.0.0.1",
+    "TRUST_PROXY_MODE=nginx-single-host",
+    "OBSERVABILITY_ENABLED=true",
+    "OBSERVABILITY_LOG_LEVEL=info"
+  ], "web env");
+  containsAll(workerEnv, [
+    "OBSERVABILITY_ENABLED=true",
+    "OBSERVABILITY_LOG_LEVEL=info",
+    "WORKER_OBSERVABILITY_HOST=127.0.0.1",
+    "WORKER_OBSERVABILITY_PORT=9465"
+  ], "worker env");
 
   containsAll(workflow, [
     "permissions:\n  contents: read",

@@ -31,6 +31,19 @@ async function waitForHealth(port, child) {
       if (response.status === 200) {
         const payload = await response.json();
         if (payload?.data?.status !== "ok") throw new Error("Standalone health payload is invalid.");
+        const live = await fetch(`http://127.0.0.1:${port}/internal/observability/live`, {
+          signal: AbortSignal.timeout(1_000)
+        });
+        if (live.status !== 200 || (await live.json())?.status !== "live") {
+          throw new Error("Standalone internal liveness contract is invalid.");
+        }
+        const metrics = await fetch(`http://127.0.0.1:${port}/internal/observability/metrics`, {
+          signal: AbortSignal.timeout(1_000)
+        });
+        const metricsBody = await metrics.text();
+        if (metrics.status !== 200 || !metricsBody.includes("process_up 1") || !metricsBody.includes("http_requests_total")) {
+          throw new Error("Standalone internal metrics contract is invalid.");
+        }
         return;
       }
     } catch {

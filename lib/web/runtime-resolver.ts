@@ -9,6 +9,7 @@ export type WebApiRuntime = Readonly<{
   authority: "memory" | "postgres";
   jobs: PersistentDownloadJobService;
   files: MediaFileDelivery;
+  readiness(): Promise<void>;
   close(): Promise<void>;
 }>;
 
@@ -54,6 +55,7 @@ async function createLocalWebRuntime(): Promise<WebApiRuntime> {
         });
       }
     }),
+    async readiness() {},
     async close() {}
   });
 }
@@ -74,6 +76,7 @@ async function createPersistentWebRuntime(
     authority: "postgres" as const,
     jobs: runtime.jobs,
     files: runtime.files,
+    readiness: runtime.readiness,
     close: runtime.close
   });
 }

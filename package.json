@@ -27,6 +27,8 @@
     "verify:deployment:linux": "node scripts/verify-linux-deployment.mjs",
     "test:release:linux": "node scripts/test-linux-installed-release.mjs",
     "audit:repository": "node scripts/audit-repository-secrets.mjs",
+    "audit:observability:bundle": "node scripts/audit-observability-bundle.mjs",
+    "test:observability": "vitest run --project unit tests/observability tests/deployment/templates.test.ts tests/release/environment-templates.test.ts",
     "test:deployment:unit": "vitest run --project unit tests/deployment",
     "test:deployment:smoke": "vitest run --config vitest.postgres.config.ts tests/postgres/production-smoke.integration.ts",
     "test:deployment": "npm run test:deployment:unit && npm run test:deployment:smoke && npm run verify:deployment",

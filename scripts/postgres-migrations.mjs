@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import pg from "pg";
 import { POSTGRES_MIGRATION_CATALOG } from "./postgres-migration-catalog.mjs";
+import { createMigrationOperationalLogger } from "./operational-log.mjs";
 
 const { Client } = pg;
 const MIGRATION_LOCK_KEY = 5_903_000_001;
@@ -194,7 +195,7 @@ export async function migrationStatus(options) {
   });
 }
 
-async function main() {
+async function main(logger) {
   const command = process.argv[2];
   const useTestDatabase = process.argv[3] === "--test";
   const production = process.env.NODE_ENV?.trim() === "production";
@@ -226,26 +227,55 @@ async function main() {
   };
   if (command === "apply") {
     const result = await applyMigrations(options);
-    console.log(
-      result.applied.length === 0
-        ? `Migrations are current (${result.total} applied).`
-        : `Applied migrations: ${result.applied.join(", ")}.`
-    );
+    logger.info("db.connected", { outcome: "success", reasonCode: "none" });
+    logger.info("migration.status", {
+      outcome: "success",
+      reasonCode: "none",
+      metadata: { command: "apply", total: result.total, applied: result.applied.length }
+    });
     return;
   }
 
   const status = await migrationStatus(options);
-  for (const migration of status) console.log(`${migration.version}: ${migration.status}`);
+  logger.info("db.connected", { outcome: "success", reasonCode: "none" });
+  logger.info("migration.status", {
+    outcome: "success",
+    reasonCode: "none",
+    metadata: {
+      command: "status",
+      total: status.length,
+      applied: status.filter((migration) => migration.status === "applied").length,
+      pending: status.filter((migration) => migration.status === "pending").length
+    }
+  });
 }
 
 const invokedAsScript = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedAsScript) {
-  main().catch((error) => {
-    const message =
-      error instanceof TypeError || error?.message?.startsWith("Migration ")
-        ? error.message
-        : "Database operation failed without exposing connection details.";
-    console.error(`PostgreSQL migration failed: ${message}`);
+  let logger;
+  void createMigrationOperationalLogger().then(async (created) => {
+    logger = created;
+    logger.info("process.starting", { outcome: "success", reasonCode: "none" });
+    try {
+      await main(logger);
+      logger.info("process.ready", { outcome: "success", reasonCode: "none" });
+    } catch (error) {
+      const configuration = error instanceof TypeError;
+      const mismatch = error?.message?.startsWith("Migration ") || error?.message?.includes("migration catalog");
+      logger.error(mismatch ? "migration.mismatch" : configuration ? "config.invalid" : "db.unavailable", {
+        outcome: "failure",
+        reasonCode: mismatch ? "schema_mismatch" : configuration ? "invalid_configuration" : "database_unavailable"
+      });
+      process.exitCode = 1;
+    } finally {
+      logger.info("process.stopping", { outcome: "success", reasonCode: "none" });
+      logger.info("process.stopped", {
+        outcome: process.exitCode ? "failure" : "success",
+        reasonCode: process.exitCode ? "internal_error" : "none"
+      });
+    }
+  }).catch(() => {
+    console.error("PostgreSQL migration failed.");
     process.exitCode = 1;
   });
 }

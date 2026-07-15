@@ -15,6 +15,20 @@ export type TrustProxyMode = "none" | "nginx-single-host";
 
 export type ApplicationProcessRole = "local" | "web" | "worker" | "migration";
 
+export type ObservabilityLogLevel = "debug" | "info" | "warn" | "error";
+
+export type ObservabilityConfig = Readonly<{
+  enabled: boolean;
+  logLevel: ObservabilityLogLevel;
+  readinessTimeoutMs: number;
+  metricsResponseMaxBytes: number;
+}>;
+
+export type WorkerObservabilityConfig = ObservabilityConfig & Readonly<{
+  host: "127.0.0.1" | "::1";
+  port: number;
+}>;
+
 export type JobRepositoryBackend = "memory" | "postgres";
 
 export type PostgresSslMode = "disable" | "require";
@@ -176,6 +190,11 @@ export const MEDIA_WORKER_CONFIG_LIMITS = Object.freeze({
   expiredRetentionSeconds: Object.freeze({ min: 60, max: 604_800, default: 86_400 })
 });
 
+export const OBSERVABILITY_CONFIG_LIMITS = Object.freeze({
+  readinessTimeoutMs: Object.freeze({ min: 100, max: 30_000, default: 5_000 }),
+  metricsResponseMaxBytes: Object.freeze({ min: 4_096, max: 262_144, default: 65_536 })
+});
+
 function parseTrustProxyMode(value: string | undefined): TrustProxyMode {
   const normalized = value?.trim();
   if (!normalized || normalized === "none") return "none";
@@ -243,6 +262,64 @@ function parseStrictBoolean(name: string, value: string | undefined, fallback: b
   if (normalized === "true") return true;
   if (normalized === "false") return false;
   throw new TypeError(`${name} must be exactly 'true' or 'false'.`);
+}
+
+export function parseObservabilityConfig(
+  source: Readonly<Record<string, string | undefined>>
+): ObservabilityConfig {
+  const production = source.NODE_ENV?.trim() === "production";
+  const enabled = parseStrictBoolean("OBSERVABILITY_ENABLED", source.OBSERVABILITY_ENABLED, true);
+  if (production && !enabled) {
+    throw new TypeError("OBSERVABILITY_ENABLED=true is required in production.");
+  }
+  const logLevel = source.OBSERVABILITY_LOG_LEVEL?.trim().toLowerCase() || "info";
+  if (logLevel !== "debug" && logLevel !== "info" && logLevel !== "warn" && logLevel !== "error") {
+    throw new TypeError("OBSERVABILITY_LOG_LEVEL must be debug, info, warn, or error.");
+  }
+  return Object.freeze({
+    enabled,
+    logLevel,
+    readinessTimeoutMs: parseBoundedInteger(
+      "OBSERVABILITY_READINESS_TIMEOUT_MS",
+      source.OBSERVABILITY_READINESS_TIMEOUT_MS,
+      OBSERVABILITY_CONFIG_LIMITS.readinessTimeoutMs
+    ),
+    metricsResponseMaxBytes: parseBoundedInteger(
+      "OBSERVABILITY_METRICS_MAX_BYTES",
+      source.OBSERVABILITY_METRICS_MAX_BYTES,
+      OBSERVABILITY_CONFIG_LIMITS.metricsResponseMaxBytes
+    )
+  });
+}
+
+export function parseWorkerObservabilityConfig(
+  source: Readonly<Record<string, string | undefined>>
+): WorkerObservabilityConfig {
+  const base = parseObservabilityConfig(source);
+  const production = source.NODE_ENV?.trim() === "production";
+  const configuredHost = source.WORKER_OBSERVABILITY_HOST?.trim();
+  if (production && !configuredHost) {
+    throw new TypeError("WORKER_OBSERVABILITY_HOST is required in production.");
+  }
+  const host = configuredHost || "127.0.0.1";
+  if (host !== "127.0.0.1" && host !== "::1") {
+    throw new TypeError("WORKER_OBSERVABILITY_HOST must be an explicit loopback address.");
+  }
+  const configuredPort = source.WORKER_OBSERVABILITY_PORT?.trim();
+  if (production && !configuredPort) {
+    throw new TypeError("WORKER_OBSERVABILITY_PORT is required in production.");
+  }
+  let port = 0;
+  if (configuredPort) {
+    if (!/^[1-9]\d*$/.test(configuredPort)) {
+      throw new TypeError("WORKER_OBSERVABILITY_PORT must be a positive integer.");
+    }
+    port = Number(configuredPort);
+    if (!Number.isSafeInteger(port) || port > 65_535) {
+      throw new TypeError("WORKER_OBSERVABILITY_PORT exceeds its supported range.");
+    }
+  }
+  return Object.freeze({ ...base, host, port });
 }
 
 /**

@@ -58,6 +58,9 @@ async function createReleaseFixture(): Promise<string> {
     write(root, "checks/web-readiness.mjs", "export {};\n"),
     write(root, "checks/cutover-readiness.mjs", "export {};\n"),
     write(root, "scripts/postgres-migrations.mjs", "export {};\n"),
+    write(root, "scripts/operational-log.mjs", await readFile(
+      path.join(process.cwd(), "scripts/operational-log.mjs"), "utf8"
+    )),
     write(root, "scripts/postgres-migration-catalog.mjs", await readFile(
       path.join(process.cwd(), "scripts/postgres-migration-catalog.mjs"), "utf8"
     )),
