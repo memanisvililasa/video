@@ -199,9 +199,34 @@ Failure actions:
 
 Для любого разрешённого rollback: traffic stop → stop web/worker → rollback-check с обоими exact commits → atomic promotion → worker readiness/leader → web readiness → Nginx validation → no-egress smoke → traffic. Data/schema/volume автоматически не удаляются и не откатываются. Расширенное финальное evidence review относится к 5.9.8C2.
 
+### Stage 5 observability rollback acceptance
+
+Previous immutable release сохраняется до завершения post-deploy window. PostgreSQL автоматически не откатывается; observability event/metric schema предыдущего release проверяется вместе с migration/marker compatibility. После atomic promotion rollback release обязан заново пройти liveness и canonical readiness обеих ролей, bounded metrics contract и Nginx isolation до открытия traffic. Alert silence или отключённый alert не считается success; отсутствие metrics после rollback является blocker для traffic, а частичная потеря необязательного operator signal — warning только при сохранённых readiness и обязательном scrape contract.
+
+Rollback не восстанавливает PostgreSQL, volume, marker или host capacity. Failed rollback не удаляет current/previous installed releases и не разрешает traffic. Повторная проверка включает exact release identity, worker listener closure/rebind, web/worker readiness, metrics, no-egress smoke и публичный route smoke.
+
+## Stage 5 production cutover checklist
+
+Repository/Linux acceptance не выполняет этот checklist автоматически. До production traffic оператор обязан документировать каждый пункт:
+
+1. Approved exact-commit Linux workflow и artifact относятся к одному full commit; companion checksum и installed release verifier успешны.
+2. Production PostgreSQL TLS, отдельные grants/runtime roles, backup и restore drill подтверждены; migrations `001`–`004` применены отдельной явной operation, а canonical status read-only и compatible.
+3. Production POSIX volume смонтирован, authority marker/permissions/hard-link/atomic-rename probes успешны; free bytes и inodes имеют approved headroom.
+4. Host-owned web/worker/migration environment files имеют минимальные role-specific variables/permissions; credentials не находятся в release или support evidence.
+5. Approved systemd templates проходят host `systemd-analyze verify`; web bind — loopback, worker observability bind — loopback, migration остаётся explicit oneshot и application logs идут только в journald.
+6. Rendered Nginx проходит `nginx -t`; internal web observability root/prefix/normalized/encoded variants и worker listener не доступны через ingress, public API/file behavior не изменён.
+7. Host TLS, firewall and DNS provisioning проверены отдельно; PostgreSQL и origin/listener ports не публикуются в Internet.
+8. Worker readiness подтверждает DB/schema/storage/FFmpeg; web canonical readiness подтверждает DB/schema/readable published storage; liveness не используется вместо readiness.
+9. Host-local monitor успешно получает bounded web/worker metrics с правильным content type; operator импортировал vendor-neutral alert definitions и настроил queries из dashboard specification без user/job dimensions.
+10. Exact-release no-egress smoke успешен. Controlled-egress smoke выполняется только отдельной approved operation, если он действительно нужен.
+11. Traffic enable выполняется только после всех blocker checks; post-deploy verification повторяет exact identity, process events, readiness, metrics, Nginx public smoke, queue/capacity и alert state.
+12. Rollback-check подтверждает compatibility предыдущего release; current promotion остаётся atomic, DB не откатывается, а traffic reopen после rollback требует полного repeat verification.
+
+Repository не устанавливает collector, dashboard, alert evaluator/delivery provider, systemd timer, TLS, firewall или DNS и не содержит production credentials.
+
 ## Linux verification boundary
 
-Validation-only CI на Ubuntu обязан выполнить exact Node/npm/FFmpeg checks, clean Linux release build/install, standalone web/worker/readiness/migration status без source tree, SIGTERM shutdown, real-role PostgreSQL acceptance, `systemd-analyze verify`, rendered isolated `nginx -t` и loopback header-sanitization integration. Скрипты `test:release:linux` и `verify:deployment:linux` fail на non-Linux и не запускают systemctl/reload/firewall/TLS provisioning. Ephemeral self-signed certificate применяется только внутри isolated Nginx test root.
+Validation-only CI на Ubuntu обязан выполнить exact Node/npm/FFmpeg checks, clean Linux release build/install, standalone web/worker liveness/readiness/metrics, migration no-listener/status, structured process events, bounded metrics security checks, SIGTERM shutdown, real-role PostgreSQL acceptance, `systemd-analyze verify`, rendered isolated `nginx -t` и normalized/encoded ingress-isolation matrix. Скрипты `test:release:linux` и `verify:deployment:linux` fail на non-Linux, не могут silently skip обязательную проверку и не запускают systemctl/reload/firewall/TLS provisioning. Ephemeral self-signed certificate применяется только внутри isolated Nginx test root; raw logs и generated web/worker build outputs не публикуются как diagnostic artifacts.
 
 Deployment host повторяет versions/codecs, `systemd-analyze verify`, rendered `nginx -t`, filesystem/mount/permissions probe, PostgreSQL TLS/backup и readiness под реальными service UIDs. CI evidence не заменяет host-specific paths, certificate, mount, resource-limit и managed-PostgreSQL checks.
 

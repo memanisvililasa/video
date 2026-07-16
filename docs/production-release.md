@@ -1,6 +1,6 @@
 # Production release and deployment contract (5.9.8B1/B2)
 
-Этот документ описывает standalone release boundary B1 с audit-driven C1 checks. Phase A templates, installation/promotion, smoke и operator runbook находятся в [deployment runbook](../deployment/README.md). Реальный deploy не выполнялся; финальное evidence review остаётся 5.9.8C2.
+Этот документ описывает standalone release boundary B1 с audit-driven C1 checks и финальной Stage 5 observability acceptance. Phase A templates, installation/promotion, smoke и operator runbook находятся в [deployment runbook](../deployment/README.md); observability contracts — в [observability specification](observability.md), [vendor-neutral dashboard](operations/dashboard.md), [journald guide](operations/journald.md) и [incident runbooks](operations/runbooks.md). Реальный deploy не выполнялся: успешный repository/Linux workflow остаётся conditional acceptance и не заменяет host prerequisites.
 
 ## Toolchain и команды
 

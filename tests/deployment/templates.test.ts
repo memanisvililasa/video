@@ -36,6 +36,36 @@ describe("Phase A deployment templates", () => {
     expect(migration).not.toContain("ReadWritePaths=/var/lib/videosave/media");
     expect(web).not.toContain("postgres-migrations.mjs apply");
     expect(worker).not.toContain("postgres-migrations.mjs apply");
+    for (const unit of [web, worker, migration]) {
+      expect(unit).toContain("StandardOutput=journal");
+      expect(unit).toContain("StandardError=journal");
+      expect(unit).not.toMatch(/LogsDirectory=|Standard(?:Output|Error)=(?:append|file):/);
+      expect(unit).not.toMatch(/OnCalendar=|Persistent=true|\.timer\b/i);
+    }
+    expect(worker).toContain("KillSignal=SIGTERM");
+    expect(worker).toContain("KillMode=mixed");
+    expect(worker).toContain("TimeoutStopSec=330s");
+    expect(web).toContain("StartLimitIntervalSec=60s");
+    expect(web).toContain("StartLimitBurst=5");
+    expect(worker).toContain("StartLimitIntervalSec=120s");
+    expect(worker).toContain("StartLimitBurst=5");
+    expect(migration).toContain("Type=oneshot");
+    expect(migration).toContain("Restart=no");
+  });
+
+  it("keeps observability environment role-aware and loopback-only", async () => {
+    const [web, worker, migration] = await Promise.all([
+      file("deployment/env/web.env.example"),
+      file("deployment/env/worker.env.example"),
+      file("deployment/env/migration.env.example")
+    ]);
+    expect(web).toContain("HOSTNAME=127.0.0.1");
+    expect(web).toContain("OBSERVABILITY_LOG_LEVEL=info");
+    expect(worker).toContain("WORKER_OBSERVABILITY_HOST=127.0.0.1");
+    expect(worker).toMatch(/WORKER_OBSERVABILITY_PORT=\d+/);
+    expect(migration).toContain("APP_PROCESS_ROLE=migration");
+    expect(migration).not.toMatch(/WORKER_OBSERVABILITY_|OBSERVABILITY_READINESS_TIMEOUT_MS|OBSERVABILITY_METRICS_MAX_BYTES|MEDIA_STORAGE_/);
+    for (const environment of [web, worker, migration]) expect(environment).not.toContain("TEST_DATABASE_URL");
   });
 
   it("overwrites client identity at every proxy location", async () => {
@@ -49,6 +79,9 @@ describe("Phase A deployment templates", () => {
     expect(nginx).not.toMatch(/\b(?:alias|root)\s+\/var\/lib\/videosave\/media/);
     expect(nginx).not.toContain("limit_except");
     const internal = nginx.match(/location \^~ \/internal\/observability\/ \{[\s\S]*?\n  \}/)?.[0] ?? "";
+    const exactInternal = nginx.match(/location = \/internal\/observability \{[\s\S]*?\n  \}/)?.[0] ?? "";
+    expect(exactInternal).toContain("return 404;");
+    expect(exactInternal).not.toContain("proxy_pass");
     expect(internal).toContain("return 404;");
     expect(internal).not.toContain("proxy_pass");
   });
@@ -132,6 +165,20 @@ describe("Phase A deployment templates", () => {
     expect(workflow).toContain("npm run test:worker:smoke");
     expect(workflow).toContain("npm run test:release:linux");
     expect(workflow).toContain("npm run verify:deployment:linux");
+    expect(workflow).toContain("npm run verify:observability");
+    const releaseLinux = workflow.slice(workflow.indexOf("  release_linux:"), workflow.indexOf("  deployment_linux:"));
+    const installed = releaseLinux.match(
+      /^      - name: Mandatory installed-release observability gate\n[\s\S]*?(?=^      - |^  \w)/m
+    )?.[0].trim();
+    expect(installed).toBe([
+      "- name: Mandatory installed-release observability gate",
+      "        run: npm run test:release:linux"
+    ].join("\n"));
+    expect(workflow.match(/^[ \t]+run: npm run test:release:linux$/gm)).toHaveLength(1);
+    expect(releaseLinux.indexOf("npm run test:release\n")).toBeLessThan(releaseLinux.indexOf("npm run test:release:linux"));
+    expect(releaseLinux.indexOf("npm run test:release:linux")).toBeLessThan(releaseLinux.indexOf("npm run stage:release:artifact"));
+    const deploymentLinux = workflow.slice(workflow.indexOf("  deployment_linux:"), workflow.indexOf("  supply_chain:"));
+    expect(deploymentLinux).toContain("- name: Linux systemd, Nginx, and observability isolation gate");
     expect(workflow).toContain('test "$(git rev-parse HEAD)" = "$GITHUB_SHA"');
   });
 });

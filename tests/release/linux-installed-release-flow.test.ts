@@ -3,8 +3,25 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { OBSERVABILITY_SCHEMA_VERSION } from "@/lib/observability/contract";
+import { createCoreMetrics } from "@/lib/observability/core-metrics";
+import { createOperationalLogger } from "@/lib/observability/logger";
+import { registerOperationalMetrics } from "@/lib/observability/operational-metrics";
 // @ts-expect-error Linux release validation tooling is intentionally plain Node.js ESM.
-import { INSTALLED_WORKER_MAX_LINE_BYTES, INSTALLED_WORKER_OBSERVABILITY_SCHEMA_VERSION, parseInstalledWorkerReadyLine, runChecked, stopInstalledProcess, validateInstalledReleaseReadiness, waitForInstalledWorkerReady } from "../../scripts/test-linux-installed-release.mjs";
+import * as installedRelease from "../../scripts/test-linux-installed-release.mjs";
+
+const {
+  INSTALLED_METRICS_MAX_BYTES,
+  INSTALLED_WORKER_MAX_LINE_BYTES,
+  INSTALLED_WORKER_OBSERVABILITY_SCHEMA_VERSION,
+  parseInstalledProcessLogLine,
+  parseInstalledWorkerReadyLine,
+  runChecked,
+  stopInstalledProcess,
+  validateInstalledMetricsText,
+  validateInstalledReleaseReadiness,
+  validateInstalledStructuredLogs,
+  waitForInstalledWorkerReady
+} = installedRelease;
 
 const RELEASE_COMMIT = "a".repeat(40);
 const RELEASE_ID = `videosave-1.0.0-${RELEASE_COMMIT.slice(0, 12)}`;
@@ -51,13 +68,17 @@ describe("Linux installed release readiness flow", () => {
       args: string[];
       role: string | undefined;
       databaseUrl: string | undefined;
+      workerHost: string | undefined;
+      workerPort: string | undefined;
     }> = [];
     const execute = vi.fn(async (_node: string, command: string[], options: { env: NodeJS.ProcessEnv }) => {
       calls.push({
         entrypoint: command[0],
         args: command.slice(1),
         role: options.env.APP_PROCESS_ROLE,
-        databaseUrl: options.env.DATABASE_URL
+        databaseUrl: options.env.DATABASE_URL,
+        workerHost: options.env.WORKER_OBSERVABILITY_HOST,
+        workerPort: options.env.WORKER_OBSERVABILITY_PORT
       });
       return { stdout: "", stderr: "" };
     });
@@ -74,10 +95,10 @@ describe("Linux installed release readiness flow", () => {
     });
 
     expect(calls).toEqual([
-      { entrypoint: "scripts/postgres-migrations.mjs", args: ["apply"], role: "migration", databaseUrl: common.DATABASE_URL },
-      { entrypoint: "scripts/postgres-migrations.mjs", args: ["status"], role: "migration", databaseUrl: common.DATABASE_URL },
-      { entrypoint: "checks/web-readiness.mjs", args: [], role: "web", databaseUrl: common.DATABASE_URL },
-      { entrypoint: "worker/main.mjs", args: ["--check"], role: "worker", databaseUrl: common.DATABASE_URL }
+      { entrypoint: "scripts/postgres-migrations.mjs", args: ["apply"], role: "migration", databaseUrl: common.DATABASE_URL, workerHost: undefined, workerPort: undefined },
+      { entrypoint: "scripts/postgres-migrations.mjs", args: ["status"], role: "migration", databaseUrl: common.DATABASE_URL, workerHost: undefined, workerPort: undefined },
+      { entrypoint: "checks/web-readiness.mjs", args: [], role: "web", databaseUrl: common.DATABASE_URL, workerHost: undefined, workerPort: undefined },
+      { entrypoint: "worker/main.mjs", args: ["--check"], role: "worker", databaseUrl: common.DATABASE_URL, workerHost: undefined, workerPort: undefined }
     ]);
   });
 
@@ -122,6 +143,13 @@ describe("installed worker canonical readiness record", () => {
     });
   });
 
+  it("accepts the same exact process.ready schema for the installed web role", () => {
+    expect(parseInstalledProcessLogLine(
+      JSON.stringify(readyRecord({ processRole: "web" })),
+      { ...parserOptions(), expectedRole: "web", expectedEvent: "process.ready" }
+    )).toMatchObject({ event: "process.ready", processRole: "web", releaseCommit: RELEASE_COMMIT });
+  });
+
   it.each([
     ["legacy text", "worker.ready"],
     ["malformed JSON", "{not-json"],
@@ -133,6 +161,10 @@ describe("installed worker canonical readiness record", () => {
     ["stopping event", JSON.stringify(readyRecord({ event: "process.stopping" }))],
     ["stopped event", JSON.stringify(readyRecord({ event: "process.stopped" }))],
     ["failure outcome", JSON.stringify(readyRecord({ outcome: "failure" }))],
+    ["unsupported outcome", JSON.stringify(readyRecord({ outcome: "maybe" }))],
+    ["unsupported reason", JSON.stringify(readyRecord({ reasonCode: "raw_database_error" }))],
+    ["unsupported level", JSON.stringify(readyRecord({ level: "trace" }))],
+    ["unknown dotted event", JSON.stringify(readyRecord({ event: "custom.ready" }))],
     ["wrong service", JSON.stringify(readyRecord({ service: "other" }))],
     ["wrong release commit", JSON.stringify(readyRecord({ releaseCommit: "c".repeat(40) }))],
     ["commit prefix", JSON.stringify(readyRecord({ releaseCommit: RELEASE_COMMIT.slice(0, 12) }))],
@@ -161,6 +193,65 @@ describe("installed worker canonical readiness record", () => {
     const line = JSON.stringify(readyRecord({ metadata: "x".repeat(INSTALLED_WORKER_MAX_LINE_BYTES) }));
     expect(Buffer.byteLength(line)).toBeGreaterThan(INSTALLED_WORKER_MAX_LINE_BYTES);
     expect(parseInstalledWorkerReadyLine(line, parserOptions())).toBeNull();
+  });
+});
+
+describe("installed observability security contracts", () => {
+  it("validates deterministic bounded HELP/TYPE metrics with fixed labels", () => {
+    const metadata = {
+      schemaVersion: OBSERVABILITY_SCHEMA_VERSION,
+      service: "videosave" as const,
+      processRole: "worker" as const,
+      processInstanceId: "b".repeat(32),
+      releaseCommit: RELEASE_COMMIT,
+      releaseId: RELEASE_ID,
+      releaseCategory: "production" as const
+    };
+    const core = createCoreMetrics(metadata, { now: () => STARTED_AT });
+    const operational = registerOperationalMetrics(core, "worker");
+    operational.setQueueSnapshot({ queued: 0, oldestQueuedAgeSeconds: 0, running: 0, staleLeases: 0 });
+    operational.setPoolSnapshot({ up: true, active: 0, idle: 1, waiting: 0, migrationCompatible: true });
+    operational.setStorageSnapshot({ up: true, readOnly: false, markerValid: true, freeBytes: 1024, freeInodes: 128 });
+    const text = core.registry.render();
+
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(INSTALLED_METRICS_MAX_BYTES);
+    expect(validateInstalledMetricsText(text, { role: "worker" })).toMatchObject({ bytes: Buffer.byteLength(text) });
+    expect(() => validateInstalledMetricsText(text.replace('role="worker"', 'requestId="attacker"'), { role: "worker" }))
+      .toThrow(/high-cardinality/);
+    expect(() => validateInstalledMetricsText(text.replace(/ 0\n/, " NaN\n"), { role: "worker" }))
+      .toThrow(/sample/);
+    expect(() => validateInstalledMetricsText(`${text}# TYPE process_up gauge\n`, { role: "worker" }))
+      .toThrow(/TYPE/);
+  });
+
+  it("validates canonical one-line lifecycle records without sensitive content", () => {
+    const lines: string[] = [];
+    const metadata = {
+      schemaVersion: OBSERVABILITY_SCHEMA_VERSION,
+      service: "videosave" as const,
+      processRole: "worker" as const,
+      processInstanceId: "b".repeat(32),
+      releaseCommit: RELEASE_COMMIT,
+      releaseId: RELEASE_ID,
+      releaseCategory: "production" as const
+    };
+    const logger = createOperationalLogger({
+      metadata,
+      now: () => new Date(STARTED_AT + 1_000),
+      sink(_record, line) { lines.push(line); }
+    });
+    for (const event of ["process.starting", "process.ready", "process.stopping", "process.stopped"] as const) {
+      logger.info(event, { outcome: "success", reasonCode: "none" });
+    }
+    const output = `${lines.join("\n")}\n`;
+    expect(validateInstalledStructuredLogs(output, {
+      ...parserOptions(),
+      expectedRole: "worker",
+      requiredEvents: ["process.starting", "process.ready", "process.stopping", "process.stopped"]
+    })).toHaveLength(4);
+    expect(() => validateInstalledStructuredLogs(output.replace('"reasonCode":"none"', '"DATABASE_URL":"postgresql://secret"'), {
+      ...parserOptions(), expectedRole: "worker"
+    })).toThrow();
   });
 });
 

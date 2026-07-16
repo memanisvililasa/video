@@ -15,6 +15,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import pg from "pg";
 import { initializeVolumeMarker } from "./durable-volume-admin.mjs";
 import { installRelease } from "./release-deployment.mjs";
 import {
@@ -30,6 +31,7 @@ const releaseRoot = path.join(projectRoot, RELEASE_ROOT_DIRECTORY);
 const AUTHORITY = "0123456789abcdef0123456789abcdef";
 export const INSTALLED_WORKER_OBSERVABILITY_SCHEMA_VERSION = "1.0";
 export const INSTALLED_WORKER_MAX_LINE_BYTES = 8 * 1024;
+export const INSTALLED_METRICS_MAX_BYTES = 64 * 1024;
 const MAX_CLOCK_SKEW_MS = 5_000;
 const PROCESS_INSTANCE_ID = /^[a-f0-9]{32}$/;
 const RELEASE_COMMIT = /^[a-f0-9]{40}$/;
@@ -42,12 +44,63 @@ const INSTALLED_COMMAND_LABELS = new Set([
   "web-readiness",
   "worker-readiness"
 ]);
+const LOG_LEVELS = new Set(["debug", "info", "warn", "error"]);
+const OPERATIONAL_EVENTS = new Set([
+  "process.starting", "process.ready", "process.not_ready", "process.stopping", "process.stopped", "config.invalid",
+  "http.request.completed", "job.submit.accepted", "job.submit.rejected", "job.status.read", "job.cancel.requested",
+  "job.file.requested", "job.file.rejected", "db.connected", "db.unavailable", "migration.status",
+  "migration.mismatch", "db.query.failed", "db.pool.exhausted", "job.queued", "job.claimed", "job.lease_lost",
+  "job.progress", "job.retry_scheduled", "job.retry_exhausted", "job.completed", "job.failed", "job.cancelled",
+  "job.expired", "download.started", "download.completed", "download.failed", "probe.started", "probe.completed",
+  "probe.failed", "transcode.started", "transcode.completed", "transcode.failed", "artifact.staged",
+  "artifact.published", "artifact.publication_failed", "lifecycle.leader_acquired", "lifecycle.leader_lost",
+  "recovery.started", "recovery.completed", "recovery.failed", "reconciliation.started", "reconciliation.completed",
+  "reconciliation.failed", "cleanup.started", "cleanup.completed", "cleanup.failed"
+]);
+const OPERATIONAL_OUTCOMES = new Set(["success", "failure", "rejected", "cancelled", "unknown"]);
+const OPERATIONAL_REASON_CODES = new Set([
+  "none", "invalid_event", "invalid_configuration", "invalid_request", "rate_limited", "job_not_found",
+  "job_not_ready", "dependency_unavailable", "database_unavailable", "schema_mismatch", "storage_unavailable",
+  "tool_unavailable", "listener_unavailable", "readiness_timeout", "readiness_failed", "method_not_allowed",
+  "body_not_allowed", "request_aborted", "cancelled", "lease_lost", "retry_scheduled", "retry_exhausted",
+  "download_failed", "probe_failed", "transcode_failed", "publication_failed", "maintenance_failed",
+  "pool_exhausted", "storage_read_only", "internal_error"
+]);
+const REQUIRED_CORE_METRICS = Object.freeze([
+  "build_info", "process_start_time_seconds", "process_up", "readiness_status",
+  "http_requests_total", "http_request_duration_seconds", "http_in_flight", "http_responses_total"
+]);
+const REQUIRED_OPERATIONAL_METRICS = Object.freeze([
+  "active_jobs", "queue_depth", "oldest_queued_job_age_seconds", "running_jobs", "stale_leases",
+  "jobs_submitted_total", "jobs_completed_total", "jobs_failed_total", "retry_exhausted_total",
+  "job_duration_seconds", "job_stage_duration_seconds", "db_up", "db_pool_active", "db_pool_idle",
+  "db_pool_waiting", "migration_compatible", "storage_up", "storage_read_only", "storage_free_bytes",
+  "storage_free_inodes", "storage_marker_valid", "cleanup_failures_total",
+  "reconciliation_failures_total", "maintenance_leader", "maintenance_last_success_timestamp"
+]);
+const REQUIRED_WORKER_METRICS = Object.freeze([
+  "worker_available_slots", "worker_active_jobs", "worker_last_heartbeat_timestamp",
+  "worker_processing_failures_total", "ffmpeg_processes", "artifact_publication_failures_total"
+]);
+const METRIC_TYPES = new Set(["counter", "gauge", "histogram"]);
+const LABEL_VALUES = Object.freeze({
+  role: new Set(["local", "web", "worker", "migration"]),
+  releaseCategory: new Set(["local", "test", "production"]),
+  route: new Set(["job_submit", "job_status", "job_cancel", "job_file"]),
+  method: new Set(["GET", "HEAD", "POST", "DELETE"]),
+  outcome: new Set(["success", "failure", "rejected", "cancelled", "unknown"]),
+  statusClass: new Set(["1xx", "2xx", "3xx", "4xx", "5xx"]),
+  preset: new Set(["original", "remux-to-mp4", "compatible-mp4", "audio-only", "unknown"]),
+  reasonCategory: new Set(["validation", "configuration", "database", "storage", "network", "ssrf", "timeout", "cancellation", "download", "probe", "transcode", "publication", "migration", "internal"]),
+  stage: new Set(["queued", "download", "probe", "transcode", "remux", "audio", "publication", "completion"]),
+  operation: new Set(["recovery", "reconciliation", "cleanup", "expiration"])
+});
 
 function exactRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
-export function parseInstalledWorkerReadyLine(line, options) {
+export function parseInstalledProcessLogLine(line, options) {
   if (typeof line !== "string" || Buffer.byteLength(line, "utf8") > INSTALLED_WORKER_MAX_LINE_BYTES || RAW_CONTROL.test(line)) {
     return null;
   }
@@ -63,12 +116,17 @@ export function parseInstalledWorkerReadyLine(line, options) {
   const nowMs = (options.now ?? Date.now)();
   if (
     record.schemaVersion !== INSTALLED_WORKER_OBSERVABILITY_SCHEMA_VERSION ||
-    record.event !== "process.ready" ||
+    typeof record.event !== "string" ||
+    !OPERATIONAL_EVENTS.has(record.event) ||
+    (options.expectedEvent !== undefined && record.event !== options.expectedEvent) ||
     record.service !== "videosave" ||
-    record.processRole !== "worker" ||
-    record.level !== "info" ||
-    record.outcome !== "success" ||
-    record.reasonCode !== "none" ||
+    record.processRole !== options.expectedRole ||
+    !LOG_LEVELS.has(record.level) ||
+    typeof record.outcome !== "string" ||
+    !OPERATIONAL_OUTCOMES.has(record.outcome) ||
+    typeof record.reasonCode !== "string" ||
+    !OPERATIONAL_REASON_CODES.has(record.reasonCode) ||
+    (options.expectedEvent === "process.ready" && (record.outcome !== "success" || record.reasonCode !== "none")) ||
     typeof record.processInstanceId !== "string" ||
     !PROCESS_INSTANCE_ID.test(record.processInstanceId) ||
     typeof record.releaseCommit !== "string" ||
@@ -88,13 +146,21 @@ export function parseInstalledWorkerReadyLine(line, options) {
   return Object.freeze({ ...record });
 }
 
-export function waitForInstalledWorkerReady(options) {
+export function parseInstalledWorkerReadyLine(line, options) {
+  return parseInstalledProcessLogLine(line, {
+    ...options,
+    expectedRole: "worker",
+    expectedEvent: "process.ready"
+  });
+}
+
+export function waitForInstalledProcessReady(options) {
   const timeoutMs = options.timeoutMs ?? 30_000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) {
     return Promise.reject(new TypeError("Installed release readiness timeout is invalid."));
   }
   if (options.child.exitCode !== null) {
-    return Promise.reject(new Error("Installed release worker exited before readiness."));
+    return Promise.reject(new Error("Installed release process exited before readiness."));
   }
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -115,7 +181,7 @@ export function waitForInstalledWorkerReady(options) {
       if (error) reject(error);
       else resolve(record);
     };
-    const invalidOutput = () => finish(new Error("Installed release worker readiness output is invalid."));
+    const invalidOutput = () => finish(new Error("Installed release readiness output is invalid."));
     const inspectLine = (bytes) => {
       if (bytes.length > INSTALLED_WORKER_MAX_LINE_BYTES) {
         invalidOutput();
@@ -128,7 +194,7 @@ export function waitForInstalledWorkerReady(options) {
         invalidOutput();
         return;
       }
-      const record = parseInstalledWorkerReadyLine(line, options);
+      const record = parseInstalledProcessLogLine(line, { ...options, expectedEvent: "process.ready" });
       if (record) finish(null, record);
     };
     const onData = (value) => {
@@ -151,8 +217,8 @@ export function waitForInstalledWorkerReady(options) {
         offset = newline + 1;
       }
     };
-    const onExit = () => finish(new Error("Installed release worker exited before readiness."));
-    const onEnd = () => finish(new Error("Installed release worker stdout ended before readiness."));
+    const onExit = () => finish(new Error("Installed release process exited before readiness."));
+    const onEnd = () => finish(new Error("Installed release process stdout ended before readiness."));
     const onStreamError = () => invalidOutput();
     const timer = setTimeout(
       () => finish(new Error("Installed release process readiness timed out.")),
@@ -164,6 +230,225 @@ export function waitForInstalledWorkerReady(options) {
     options.stdout.once("error", onStreamError);
     options.child.once("exit", onExit);
   });
+}
+
+export function waitForInstalledWorkerReady(options) {
+  return waitForInstalledProcessReady({ ...options, expectedRole: "worker" });
+}
+
+function parseMetricLabels(raw) {
+  if (!raw) return Object.freeze({});
+  const body = raw.slice(1, -1);
+  const output = {};
+  let offset = 0;
+  const pattern = /([A-Za-z_][A-Za-z0-9_]*)="((?:\\.|[^"\\])*)"(?:,|$)/gy;
+  while (offset < body.length) {
+    pattern.lastIndex = offset;
+    const match = pattern.exec(body);
+    if (!match) throw new Error("Installed metrics labels are malformed.");
+    let value;
+    try { value = JSON.parse(`"${match[2]}"`); } catch { throw new Error("Installed metrics label escaping is invalid."); }
+    if (Object.hasOwn(output, match[1])) throw new Error("Installed metrics contain a duplicate label.");
+    output[match[1]] = value;
+    offset = pattern.lastIndex;
+  }
+  return Object.freeze(output);
+}
+
+function assertMetricLabels(labels) {
+  for (const [name, value] of Object.entries(labels)) {
+    if (/request.?id|public.?job.?id|job.?id|user|client|ip|url|filename|path|error/i.test(name)) {
+      throw new Error("Installed metrics contain a high-cardinality label.");
+    }
+    if (name === "le") {
+      if (value !== "+Inf" && (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(Number(value)))) {
+        throw new Error("Installed histogram boundary is invalid.");
+      }
+      continue;
+    }
+    const allowed = LABEL_VALUES[name];
+    if (!allowed || !allowed.has(value)) throw new Error("Installed metrics label value is outside its allowlist.");
+  }
+}
+
+export function validateInstalledMetricsText(text, options = {}) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > INSTALLED_METRICS_MAX_BYTES) {
+    throw new Error("Installed metrics response exceeds its bound.");
+  }
+  if (!text.endsWith("\n") || /[\r\u0000]/.test(text)) throw new Error("Installed metrics exposition is malformed.");
+  if (/postgres(?:ql)?:\/\/|https?:\/\/|(?:^|[\s"'])\/(?:home|tmp|var|opt|Users|private)\/|requestId|publicJobId|DATABASE_URL|TEST_DATABASE_URL|\.mp4\b/i.test(text)) {
+    throw new Error("Installed metrics expose sensitive or high-cardinality content.");
+  }
+  const help = new Map();
+  const types = new Map();
+  const samples = new Set();
+  const valuePattern = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?";
+  for (const line of text.trimEnd().split("\n")) {
+    if (line.startsWith("# HELP ")) {
+      const match = line.match(/^# HELP ([A-Za-z_:][A-Za-z0-9_:]*) ([^\r\n]{1,256})$/);
+      if (!match || help.has(match[1])) throw new Error("Installed metrics HELP contract is invalid.");
+      help.set(match[1], match[2]);
+      continue;
+    }
+    if (line.startsWith("# TYPE ")) {
+      const match = line.match(/^# TYPE ([A-Za-z_:][A-Za-z0-9_:]*) (counter|gauge|histogram)$/);
+      if (!match || !METRIC_TYPES.has(match[2]) || types.has(match[1])) throw new Error("Installed metrics TYPE contract is invalid.");
+      types.set(match[1], match[2]);
+      continue;
+    }
+    const match = line.match(new RegExp(`^([A-Za-z_:][A-Za-z0-9_:]*)(\\{[^{}]*\\})? (${valuePattern})$`));
+    if (!match || !Number.isFinite(Number(match[3]))) throw new Error("Installed metrics sample is invalid.");
+    const labels = parseMetricLabels(match[2]);
+    assertMetricLabels(labels);
+    const identity = `${match[1]}${match[2] ?? ""}`;
+    if (samples.has(identity)) throw new Error("Installed metrics contain a duplicate sample.");
+    samples.add(identity);
+  }
+  for (const [name, type] of types) {
+    if (!help.has(name) || !METRIC_TYPES.has(type)) throw new Error("Installed metrics descriptor is incomplete.");
+  }
+  if (help.size !== types.size) throw new Error("Installed metrics HELP/TYPE descriptors are inconsistent.");
+  const required = [...REQUIRED_CORE_METRICS, ...REQUIRED_OPERATIONAL_METRICS, ...(options.role === "worker" ? REQUIRED_WORKER_METRICS : [])];
+  for (const name of required) {
+    if (!help.has(name) || !types.has(name)) throw new Error(`Installed metrics are missing required family: ${name}.`);
+  }
+  return Object.freeze({ families: help.size, samples: samples.size, bytes: Buffer.byteLength(text, "utf8") });
+}
+
+export function validateInstalledStructuredLogs(text, options) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 128 * 1024) {
+    throw new Error("Installed structured log capture is invalid.");
+  }
+  const records = [];
+  for (const line of text.split("\n")) {
+    const candidate = line.trim();
+    if (!candidate.startsWith("{")) continue;
+    let parsed;
+    try { parsed = JSON.parse(candidate); } catch { throw new Error("Installed structured log line is invalid JSON."); }
+    if (parsed?.service !== "videosave") continue;
+    const record = parseInstalledProcessLogLine(candidate, options);
+    if (!record) throw new Error("Installed structured log record violates the canonical schema.");
+    if (/DATABASE_URL|TEST_DATABASE_URL|Authorization|cookie|sourceUrl|payload|raw.?sql|ffmpegStderr|postgres(?:ql)?:\/\/|https?:\/\//i.test(candidate)) {
+      throw new Error("Installed structured log record contains sensitive content.");
+    }
+    if (/(?:^|["'\s])\/(?:home|tmp|var|opt|Users|private)\//.test(candidate)) {
+      throw new Error("Installed structured log record contains an absolute path.");
+    }
+    records.push(record);
+  }
+  for (const event of options.requiredEvents ?? []) {
+    if (!records.some((record) => record.event === event)) throw new Error(`Installed structured logs are missing ${event}.`);
+  }
+  if (records.some((record) => record.level === "info" && /heartbeat/i.test(record.event))) {
+    throw new Error("Installed structured logs contain heartbeat noise.");
+  }
+  return Object.freeze(records);
+}
+
+function captureProcessOutput(child) {
+  let value = "";
+  const append = (chunk) => { value = `${value}${Buffer.from(chunk).toString("utf8")}`.slice(-128 * 1024); };
+  child.stdout?.on("data", append);
+  child.stderr?.on("data", append);
+  return Object.freeze({
+    text: () => value,
+    close() {
+      child.stdout?.off("data", append);
+      child.stderr?.off("data", append);
+    }
+  });
+}
+
+async function loopbackRequest(port, pathname, method = "GET") {
+  const response = await fetch(`http://127.0.0.1:${port}${pathname}`, {
+    method,
+    redirect: "manual",
+    signal: AbortSignal.timeout(5_000)
+  });
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length > INSTALLED_METRICS_MAX_BYTES) throw new Error("Installed observability response is oversized.");
+  return Object.freeze({
+    status: response.status,
+    contentType: response.headers.get("content-type") ?? "",
+    body: body.toString("utf8")
+  });
+}
+
+async function assertLoopbackClosed(port, label) {
+  try {
+    await loopbackRequest(port, "/internal/observability/live");
+  } catch {
+    return;
+  }
+  throw new Error(`${label} listener remained reachable after cleanup.`);
+}
+
+async function snapshotDatabase(databaseUrl) {
+  const pool = new pg.Pool({ connectionString: databaseUrl, max: 1, connectionTimeoutMillis: 5_000 });
+  try {
+    const result = await pool.query(`SELECT
+      (SELECT md5(COALESCE(jsonb_agg(to_jsonb(j) ORDER BY j.job_id)::text, '[]')) FROM media_jobs AS j) AS jobs,
+      (SELECT md5(COALESCE(jsonb_agg(to_jsonb(a) ORDER BY a.artifact_id)::text, '[]')) FROM media_artifacts AS a) AS artifacts,
+      (SELECT count(*)::text FROM media_lifecycle_state) AS lifecycle`);
+    return Object.freeze({ ...result.rows[0] });
+  } finally {
+    await pool.end();
+  }
+}
+
+async function snapshotStorage(root) {
+  const [jobs, published, rootEntries] = await Promise.all([
+    readdir(path.join(root, "jobs")),
+    readdir(path.join(root, "published")),
+    readdir(root)
+  ]);
+  return JSON.stringify({ jobs: jobs.sort(), published: published.sort(), root: rootEntries.sort() });
+}
+
+async function verifyInstalledEndpointSet(options) {
+  const databaseBefore = await snapshotDatabase(options.databaseUrl);
+  const storageBefore = await snapshotStorage(options.volumeRoot);
+  const live = await loopbackRequest(options.port, "/internal/observability/live");
+  if (live.status !== 200 || live.body !== JSON.stringify({ status: "live" })) throw new Error("Installed liveness contract failed.");
+  const head = await loopbackRequest(options.port, "/internal/observability/live", "HEAD");
+  if (head.status !== 200 || head.body !== "") throw new Error("Installed liveness HEAD contract failed.");
+  const ready = await loopbackRequest(options.port, "/internal/observability/ready");
+  if (ready.status !== 200 || ready.body !== JSON.stringify({ status: "ready" })) throw new Error("Installed readiness contract failed.");
+  const first = await loopbackRequest(options.port, "/internal/observability/metrics");
+  const second = await loopbackRequest(options.port, "/internal/observability/metrics");
+  if (first.status !== 200 || second.status !== 200 || !first.contentType.startsWith("text/plain; version=0.0.4")) {
+    throw new Error("Installed metrics HTTP contract failed.");
+  }
+  validateInstalledMetricsText(first.body, { role: options.role });
+  validateInstalledMetricsText(second.body, { role: options.role });
+  const third = await loopbackRequest(options.port, "/internal/observability/metrics");
+  if (second.body !== third.body) throw new Error("Installed metrics exposition is not deterministic.");
+  const concurrent = await Promise.all(Array.from({ length: 8 }, () => loopbackRequest(options.port, "/internal/observability/metrics")));
+  for (const response of concurrent) {
+    if (response.status !== 200) throw new Error("Installed concurrent metrics scrape failed.");
+    validateInstalledMetricsText(response.body, { role: options.role });
+  }
+  for (const method of ["POST", "DELETE", "OPTIONS"]) {
+    const response = await loopbackRequest(options.port, "/internal/observability/metrics", method);
+    if (response.status !== 405) throw new Error("Installed observability method rejection failed.");
+  }
+  const databaseAfter = await snapshotDatabase(options.databaseUrl);
+  const storageAfter = await snapshotStorage(options.volumeRoot);
+  if (JSON.stringify(databaseAfter) !== JSON.stringify(databaseBefore) || storageAfter !== storageBefore) {
+    throw new Error("Installed metrics scrape mutated durable state.");
+  }
+}
+
+async function verifyDependencyOutage(options) {
+  const ready = await loopbackRequest(options.port, "/internal/observability/ready");
+  if (ready.status !== 503 || !/^\{"status":"not_ready","reason":"(?:database|timeout|internal)"\}$/.test(ready.body)) {
+    throw new Error("Installed readiness did not fail closed during dependency outage.");
+  }
+  const live = await loopbackRequest(options.port, "/internal/observability/live");
+  if (live.status !== 200) throw new Error("Installed liveness depends on PostgreSQL availability.");
+  const metrics = await loopbackRequest(options.port, "/internal/observability/metrics");
+  if (metrics.status === 200) validateInstalledMetricsText(metrics.body, { role: options.role });
+  else if (metrics.status !== 503 || Buffer.byteLength(metrics.body, "utf8") > 512) throw new Error("Installed outage metrics response is unsafe.");
 }
 
 async function availablePort() {
@@ -256,8 +541,8 @@ export async function createPostgresTlsBridge(databaseUrl, root) {
   if (!Number.isSafeInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65_535) {
     throw new Error("Disposable PostgreSQL port is invalid.");
   }
-  const tlsRoot = path.join(root, ".postgres-tls-bridge");
-  await mkdir(tlsRoot, { mode: 0o700 });
+  const tlsRoot = await mkdtemp(path.join(root, ".postgres-tls-bridge-"));
+  await chmod(tlsRoot, 0o700);
   const keyFile = path.join(tlsRoot, "server.key");
   const certificateFile = path.join(tlsRoot, "server.crt");
   const configFile = path.join(tlsRoot, "openssl.cnf");
@@ -412,11 +697,13 @@ async function main() {
     const installedRoot = path.join(deploymentRoot, "releases", installed.releaseId);
     const ffmpeg = await executable("ffmpeg");
     const ffprobe = await executable("ffprobe");
-    postgresTlsBridge = await createPostgresTlsBridge(databaseUrl, deploymentRoot);
     const workerObservabilityPort = await availablePort();
     if (!workerObservabilityPort) throw new Error("Worker observability loopback port was not allocated.");
     const common = {
-      ...process.env,
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      CI: "true",
       NODE_ENV: "test",
       DATABASE_URL: databaseUrl,
       POSTGRES_SSL_MODE: "disable",
@@ -434,60 +721,88 @@ async function main() {
       MEDIA_STORAGE_LOW_DISK_BYTES: "1048576",
       MEDIA_FINAL_TTL_SECONDS: "60"
     };
-    const workerEnvironment = {
-      ...common,
-      NODE_ENV: "production",
-      APP_PROCESS_ROLE: "worker",
-      DATABASE_URL: postgresTlsBridge.databaseUrl,
-      POSTGRES_SSL_MODE: "require",
-      NODE_EXTRA_CA_CERTS: postgresTlsBridge.certificateFile,
-      OBSERVABILITY_ENABLED: "true",
-      OBSERVABILITY_LOG_LEVEL: "info",
-      WORKER_OBSERVABILITY_HOST: "127.0.0.1",
-      WORKER_OBSERVABILITY_PORT: String(workerObservabilityPort),
-      WORKER_CONCURRENCY: "1",
-      WORKER_POLL_INTERVAL_MS: "100",
-      WORKER_PROGRESS_INTERVAL_MS: "250",
-      WORKER_SHUTDOWN_GRACE_MS: "5000",
-      WORKER_ATTEMPT_TIMEOUT_MS: "60000",
-      JOB_LEASE_DURATION_MS: "15000",
-      JOB_LEASE_RENEW_INTERVAL_MS: "1000",
-      WORKER_CANCELLATION_POLL_INTERVAL_MS: "1000",
-      JOB_RECOVERY_INTERVAL_MS: "5000",
-      MAX_FILE_SIZE_MB: "5",
-      MAX_VIDEO_DURATION_MINUTES: "1",
-      DOWNLOAD_TIMEOUT_SECONDS: "10",
-      FFPROBE_TIMEOUT_SECONDS: "10",
-      FFMPEG_TIMEOUT_SECONDS: "10",
-      FFMPEG_KILL_GRACE_SECONDS: "1",
-      FFMPEG_THREADS: "1",
-      FFMPEG_PATH: ffmpeg,
-      FFPROBE_PATH: ffprobe
-    };
+    const workerEnvironmentFor = (bridge) => ({
+        ...common,
+        NODE_ENV: "production",
+        APP_PROCESS_ROLE: "worker",
+        DATABASE_URL: bridge.databaseUrl,
+        POSTGRES_SSL_MODE: "require",
+        POSTGRES_CONNECTION_TIMEOUT_MS: "1000",
+        NODE_EXTRA_CA_CERTS: bridge.certificateFile,
+        OBSERVABILITY_ENABLED: "true",
+        OBSERVABILITY_LOG_LEVEL: "info",
+        OBSERVABILITY_READINESS_TIMEOUT_MS: "2000",
+        OBSERVABILITY_METRICS_MAX_BYTES: String(INSTALLED_METRICS_MAX_BYTES),
+        WORKER_OBSERVABILITY_HOST: "127.0.0.1",
+        WORKER_OBSERVABILITY_PORT: String(workerObservabilityPort),
+        WORKER_CONCURRENCY: "1",
+        WORKER_POLL_INTERVAL_MS: "100",
+        WORKER_PROGRESS_INTERVAL_MS: "250",
+        WORKER_SHUTDOWN_GRACE_MS: "5000",
+        WORKER_ATTEMPT_TIMEOUT_MS: "60000",
+        JOB_LEASE_DURATION_MS: "15000",
+        JOB_LEASE_RENEW_INTERVAL_MS: "1000",
+        WORKER_CANCELLATION_POLL_INTERVAL_MS: "1000",
+        JOB_RECOVERY_INTERVAL_MS: "5000",
+        MAX_FILE_SIZE_MB: "5",
+        MAX_VIDEO_DURATION_MINUTES: "1",
+        DOWNLOAD_TIMEOUT_SECONDS: "10",
+        FFPROBE_TIMEOUT_SECONDS: "10",
+        FFMPEG_TIMEOUT_SECONDS: "10",
+        FFMPEG_KILL_GRACE_SECONDS: "1",
+        FFMPEG_THREADS: "1",
+        FFMPEG_PATH: ffmpeg,
+        FFPROBE_PATH: ffprobe
+      });
+    postgresTlsBridge = await createPostgresTlsBridge(databaseUrl, deploymentRoot);
+    let workerEnvironment = workerEnvironmentFor(postgresTlsBridge);
     await validateInstalledReleaseReadiness({ installedRoot, common, workerEnvironment });
+    await assertLoopbackClosed(workerObservabilityPort, "Migration/readiness");
+    for (const host of ["0.0.0.0", "::", "192.0.2.1"]) {
+      const rejected = await run(process.execPath, ["worker/main.mjs", "--check"], {
+        cwd: installedRoot,
+        env: { ...workerEnvironment, WORKER_OBSERVABILITY_HOST: host },
+        timeout: 15_000,
+        maxBuffer: 128 * 1024
+      }).then(() => false, () => true);
+      if (!rejected) throw new Error("Installed worker accepted a non-loopback observability host.");
+    }
 
     const port = await availablePort();
     if (!port) throw new Error("Web loopback port was not allocated.");
-    const webOutput = { value: "" };
+    const webEnvironment = {
+      ...common,
+      NODE_ENV: "production",
+      APP_PROCESS_ROLE: "web",
+      DATABASE_URL: postgresTlsBridge.databaseUrl,
+      POSTGRES_SSL_MODE: "require",
+      POSTGRES_CONNECTION_TIMEOUT_MS: "1000",
+      NODE_EXTRA_CA_CERTS: postgresTlsBridge.certificateFile,
+      HOSTNAME: "127.0.0.1",
+      PORT: String(port),
+      TRUST_PROXY_MODE: "nginx-single-host",
+      OBSERVABILITY_ENABLED: "true",
+      OBSERVABILITY_LOG_LEVEL: "info",
+      OBSERVABILITY_READINESS_TIMEOUT_MS: "2000",
+      OBSERVABILITY_METRICS_MAX_BYTES: String(INSTALLED_METRICS_MAX_BYTES)
+    };
+    const webStartedAt = Date.now();
     const web = spawn(process.execPath, ["server.js"], {
       cwd: installedRoot,
-      env: {
-        ...common,
-        // The disposable CI PostgreSQL service intentionally has no trusted TLS certificate.
-        // Production fail-closed parsing is covered separately; this gate proves the installed
-        // Linux standalone artifact boots and stops without depending on the source tree.
-        NODE_ENV: "test",
-        APP_PROCESS_ROLE: "web",
-        HOSTNAME: "127.0.0.1",
-        PORT: String(port),
-        TRUST_PROXY_MODE: "nginx-single-host",
-        POSTGRES_SSL_MODE: "disable"
-      },
+      env: webEnvironment,
       stdio: ["ignore", "pipe", "pipe"]
     });
-    web.stdout.on("data", (chunk) => { webOutput.value = `${webOutput.value}${chunk}`.slice(-16_384); });
-    web.stderr.on("data", (chunk) => { webOutput.value = `${webOutput.value}${chunk}`.slice(-16_384); });
+    const webOutput = captureProcessOutput(web);
     try {
+      await waitForInstalledProcessReady({
+        child: web,
+        stdout: web.stdout,
+        expectedRole: "web",
+        expectedReleaseCommit: manifest.build.gitCommit,
+        expectedReleaseId: installed.releaseId,
+        startedAtMs: webStartedAt,
+        timeoutMs: 30_000
+      });
       const deadline = Date.now() + 30_000;
       let healthy = false;
       while (Date.now() < deadline) {
@@ -505,17 +820,39 @@ async function main() {
         }
       }
       if (!healthy) throw new Error("Installed web health check timed out.");
+      await verifyInstalledEndpointSet({
+        role: "web",
+        port,
+        databaseUrl,
+        volumeRoot
+      });
+      await postgresTlsBridge.close();
+      postgresTlsBridge = undefined;
+      await verifyDependencyOutage({ role: "web", port });
       await stopInstalledProcess(web, "Installed web");
+      if (web.exitCode !== 0 || web.signalCode !== null) throw new Error("Installed web did not stop gracefully.");
+      validateInstalledStructuredLogs(webOutput.text(), {
+        expectedRole: "web",
+        expectedReleaseCommit: manifest.build.gitCommit,
+        expectedReleaseId: installed.releaseId,
+        startedAtMs: webStartedAt,
+        requiredEvents: ["process.starting", "process.ready", "process.stopping", "process.stopped"]
+      });
+      await assertLoopbackClosed(port, "Web");
     } finally {
+      webOutput.close();
       if (web.exitCode === null) web.kill("SIGKILL");
     }
 
+    postgresTlsBridge = await createPostgresTlsBridge(databaseUrl, deploymentRoot);
+    workerEnvironment = workerEnvironmentFor(postgresTlsBridge);
     const workerStartedAt = Date.now();
     const worker = spawn(process.execPath, ["worker/main.mjs"], {
       cwd: installedRoot,
       env: workerEnvironment,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    const workerOutput = captureProcessOutput(worker);
     try {
       await waitForInstalledWorkerReady({
         child: worker,
@@ -525,14 +862,32 @@ async function main() {
         startedAtMs: workerStartedAt,
         timeoutMs: 30_000
       });
+      await verifyInstalledEndpointSet({
+        role: "worker",
+        port: workerObservabilityPort,
+        databaseUrl,
+        volumeRoot
+      });
+      await postgresTlsBridge.close();
+      postgresTlsBridge = undefined;
+      await verifyDependencyOutage({ role: "worker", port: workerObservabilityPort });
       await stopInstalledProcess(worker, "Installed worker", 15_000);
       if (worker.exitCode !== 0 || worker.signalCode !== null) {
         throw new Error("Installed worker did not complete graceful SIGTERM shutdown.");
       }
+      validateInstalledStructuredLogs(workerOutput.text(), {
+        expectedRole: "worker",
+        expectedReleaseCommit: manifest.build.gitCommit,
+        expectedReleaseId: installed.releaseId,
+        startedAtMs: workerStartedAt,
+        requiredEvents: ["process.starting", "process.ready", "process.stopping", "process.stopped"]
+      });
+      await assertLoopbackClosed(workerObservabilityPort, "Worker observability");
     } finally {
+      workerOutput.close();
       if (worker.exitCode === null) worker.kill("SIGKILL");
     }
-    console.info("Linux installed release and process signal validation passed.");
+    console.info("Linux installed release observability validation passed.");
   } finally {
     await postgresTlsBridge?.close().catch(() => undefined);
     await makeWritable(deploymentRoot);

@@ -1,6 +1,14 @@
 # Phase A observability
 
-Stage 5.9.9B extends the process-local 5.9.9A registry and structured logger. It does not install or require a collector, dashboard, alert delivery service, or background evaluator. Web and worker expose the same internal, loopback-only endpoints established in 5.9.9A; public Nginx ingress does not proxy them.
+Stage 5.9.9C completes the production repository boundary built by 5.9.9A/5.9.9B. It does not install or require a collector, dashboard product, alert delivery service, or background evaluator. Web and worker expose internal loopback-only endpoints; public Nginx ingress rejects the exact internal root, its prefix, normalized/encoded variants, trailing slashes, and unsupported methods before generic proxying.
+
+## Production configuration contract
+
+`OBSERVABILITY_ENABLED=true` is required in production. `OBSERVABILITY_LOG_LEVEL` is one of `debug`, `info`, `warn`, or `error`; the production recommendation is `info`. `OBSERVABILITY_READINESS_TIMEOUT_MS` is bounded to 100–30000 ms and `OBSERVABILITY_METRICS_MAX_BYTES` to 4096–262144 bytes. Web keeps its established loopback origin and canonical `x-request-id` correlation contract.
+
+Only the worker receives `WORKER_OBSERVABILITY_HOST` and `WORKER_OBSERVABILITY_PORT`. The host must be exactly `127.0.0.1` or `::1`; wildcard and non-loopback binds fail closed, and the port is an integer from 1 to 65535. Migration receives no listener, readiness, metrics-size, or storage-observability configuration and never starts web/worker/listeners. Fixed collector safety bounds are implementation contracts rather than operator inputs: a two-second overall collection budget, a one-second PostgreSQL statement/acquisition bound, a ten-second PostgreSQL cache, and a fifteen-second storage cache.
+
+Release identity comes from verified build metadata (`releaseCommit` and `releaseId`) rather than arbitrary environment values. Importing configuration validates data only: it does not open a listener, create a database pool, read environment files, or touch storage. Environment templates contain placeholders, not credentials or deployment targets.
 
 ## Event catalog
 
@@ -22,4 +30,4 @@ For a single host, scrape web and worker loopback endpoints every 15–30 second
 
 `lib/observability/alert-rules.ts` is an inert, vendor-neutral catalog. Thresholds and durations are conservative defaults; threshold overrides are accepted only inside each rule's validated operator bounds. The application does not evaluate rules or deliver pages. Host restart counts and the no-egress smoke result remain explicit operator-provided signals.
 
-Runbook procedures are indexed in [Phase A operational runbooks](operations/runbooks.md).
+Runbook procedures are indexed in [Phase A operational runbooks](operations/runbooks.md). Operator integration is specified by the [vendor-neutral dashboard](operations/dashboard.md) and [journald operations](operations/journald.md). Alerts, dashboard queries, retention, scraping, and delivery remain operator-owned; no repository component provisions an external collector or provider.

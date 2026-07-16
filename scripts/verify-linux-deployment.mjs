@@ -259,8 +259,25 @@ async function verifyNginx(root) {
     });
     return withNginxProcess(child, async () => {
       await waitForNginx(httpsPort, child);
-      const internal = await httpsJson(httpsPort, "GET", "/internal/observability/metrics");
-      if (internal.status !== 404) throw new Error("Nginx exposed the internal observability prefix.");
+      const internalPaths = [
+        "/internal/observability",
+        "/internal/observability/",
+        "/internal/observability/live",
+        "/internal/observability/ready",
+        "/internal/observability/metrics",
+        "//internal/observability/metrics",
+        "/internal//observability/metrics",
+        "/%69nternal/observability/metrics",
+        "/internal/observability%2Fmetrics"
+      ];
+      for (const method of ["GET", "HEAD", "POST", "DELETE", "OPTIONS"]) {
+        for (const pathname of internalPaths) {
+          const internal = await httpsJson(httpsPort, method, pathname);
+          if (internal.status !== 404 && internal.status !== 400) {
+            throw new Error("Nginx exposed an internal observability path variant.");
+          }
+        }
+      }
       const redirect = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
         headers: { Host: "videosave.test" },
         redirect: "manual",

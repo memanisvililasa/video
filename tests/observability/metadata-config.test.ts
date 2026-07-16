@@ -23,6 +23,38 @@ describe("observability configuration", () => {
     })).toThrow(/loopback/);
   });
 
+  it("bounds production log, readiness, metrics and listener values fail closed", () => {
+    expect(parseWorkerObservabilityConfig({
+      NODE_ENV: "production",
+      WORKER_OBSERVABILITY_HOST: "127.0.0.1",
+      WORKER_OBSERVABILITY_PORT: "9465",
+      OBSERVABILITY_READINESS_TIMEOUT_MS: "100",
+      OBSERVABILITY_METRICS_MAX_BYTES: "4096"
+    })).toMatchObject({ host: "127.0.0.1", port: 9465, readinessTimeoutMs: 100, metricsResponseMaxBytes: 4096 });
+    for (const port of ["0", "65536", "1.5", "unknown"]) {
+      expect(() => parseWorkerObservabilityConfig({
+        NODE_ENV: "production",
+        WORKER_OBSERVABILITY_HOST: "127.0.0.1",
+        WORKER_OBSERVABILITY_PORT: port
+      })).toThrow(/PORT/);
+    }
+    for (const value of ["99", "30001", "unknown"]) {
+      expect(() => parseObservabilityConfig({ OBSERVABILITY_READINESS_TIMEOUT_MS: value })).toThrow(/READINESS/);
+    }
+    for (const value of ["4095", "262145", "unknown"]) {
+      expect(() => parseObservabilityConfig({ OBSERVABILITY_METRICS_MAX_BYTES: value })).toThrow(/METRICS/);
+    }
+    expect(() => parseObservabilityConfig({ NODE_ENV: "production", OBSERVABILITY_ENABLED: "false" })).toThrow(/required/);
+    expect(() => parseObservabilityConfig({ OBSERVABILITY_LOG_LEVEL: "verbose" })).toThrow(/LOG_LEVEL/);
+  });
+
+  it("does not require worker listener variables for the migration role", () => {
+    expect(parseObservabilityConfig({ NODE_ENV: "production", APP_PROCESS_ROLE: "migration" })).toMatchObject({
+      enabled: true,
+      logLevel: "info"
+    });
+  });
+
   it("loads validated production release metadata without Git or hostname data", async () => {
     const metadata = await createProcessMetadata({
       source: { NODE_ENV: "production", APP_PROCESS_ROLE: "worker" },

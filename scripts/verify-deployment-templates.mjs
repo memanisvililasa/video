@@ -40,7 +40,7 @@ function unitContract(name, content) {
 }
 
 export async function verifyDeploymentTemplates() {
-  const [web, worker, migration, nginx, roles, database, grants, audit, webEnv, workerEnv, workflow, ignore] = await Promise.all([
+  const [web, worker, migration, nginx, roles, database, grants, audit, webEnv, workerEnv, migrationEnv, workflow, ignore] = await Promise.all([
     text("deployment/systemd/videosave-web.service"),
     text("deployment/systemd/videosave-worker.service"),
     text("deployment/systemd/videosave-migrate.service"),
@@ -51,6 +51,7 @@ export async function verifyDeploymentTemplates() {
     text("deployment/postgres/privilege-audit.sql"),
     text("deployment/env/web.env.example"),
     text("deployment/env/worker.env.example"),
+    text("deployment/env/migration.env.example"),
     text(".github/workflows/validate.yml"),
     text(".gitignore")
   ]);
@@ -65,7 +66,10 @@ export async function verifyDeploymentTemplates() {
     "EnvironmentFile=/etc/videosave/web.env",
     "ExecStartPre=/usr/bin/node /opt/videosave/current/checks/web-readiness.mjs",
     "ExecStart=/usr/bin/node /opt/videosave/current/server.js",
+    "StartLimitIntervalSec=60s",
+    "StartLimitBurst=5",
     "Restart=on-failure",
+    "RestartSec=5s",
     "KillSignal=SIGTERM",
     "KillMode=mixed",
     "RequiresMountsFor=/var/lib/videosave/media",
@@ -80,7 +84,10 @@ export async function verifyDeploymentTemplates() {
     "EnvironmentFile=/etc/videosave/worker.env",
     "ExecStartPre=/usr/bin/node /opt/videosave/current/worker/main.mjs --check",
     "ExecStart=/usr/bin/node /opt/videosave/current/worker/main.mjs",
+    "StartLimitIntervalSec=120s",
+    "StartLimitBurst=5",
     "Restart=on-failure",
+    "RestartSec=10s",
     "KillSignal=SIGTERM",
     "KillMode=mixed",
     "TimeoutStopSec=330s",
@@ -97,6 +104,11 @@ export async function verifyDeploymentTemplates() {
     "Restart=no"
   ], "migration unit");
   assert(!migration.includes("Restart=always"), "Migration must never restart continuously.");
+  for (const [name, unit] of [["web", web], ["worker", worker], ["migration", migration]]) {
+    assert(unit.includes("StandardOutput=journal") && unit.includes("StandardError=journal"), `${name} unit must use journald.`);
+    assert(!/LogsDirectory=|Standard(?:Output|Error)=(?:append|file):|(?:^|[=/])[^\n]*\.log(?:\s|$)/im.test(unit), `${name} unit must not create application log files.`);
+    assert(!/OnCalendar=|Persistent=true|\.timer\b/i.test(unit), `${name} unit must not add a scheduler.`);
+  }
 
   containsAll(nginx, [
     "server 127.0.0.1:3000;",
@@ -121,6 +133,8 @@ export async function verifyDeploymentTemplates() {
     "request_id=$request_id",
     "method=$request_method uri=$uri"
   ], "Nginx template");
+  assert(/location = \/internal\/observability \{[\s\S]*?return 404;[\s\S]*?\n  \}/.test(nginx),
+    "Nginx must reject the exact internal observability root before generic proxying.");
   assert((nginx.match(/proxy_set_header X-VideoSave-Client-IP \$remote_addr;/g) ?? []).length === 2,
     "Every Nginx proxy location must overwrite the trusted identity header.");
   assert((nginx.match(/proxy_set_header Host __PUBLIC_HOSTNAME__;/g) ?? []).length === 2,
@@ -184,6 +198,14 @@ export async function verifyDeploymentTemplates() {
     "WORKER_OBSERVABILITY_HOST=127.0.0.1",
     "WORKER_OBSERVABILITY_PORT=9465"
   ], "worker env");
+  containsAll(migrationEnv, [
+    "APP_PROCESS_ROLE=migration",
+    "OBSERVABILITY_ENABLED=true",
+    "OBSERVABILITY_LOG_LEVEL=info",
+    "POSTGRES_SSL_MODE=require"
+  ], "migration env");
+  assert(!/WORKER_OBSERVABILITY_|OBSERVABILITY_READINESS_TIMEOUT_MS|OBSERVABILITY_METRICS_MAX_BYTES|MEDIA_STORAGE_/.test(migrationEnv),
+    "Migration env must not require listener, readiness, metrics, or storage configuration.");
 
   containsAll(workflow, [
     "permissions:\n  contents: read",
@@ -198,6 +220,7 @@ export async function verifyDeploymentTemplates() {
     "postgres:17",
     "ffmpeg",
     "npm run test:deployment:unit",
+    "npm run verify:observability",
     "npm run test:postgres",
     "npm run check:cutover:test",
     "npm run test:worker:smoke",
@@ -245,6 +268,36 @@ export async function verifyDeploymentTemplates() {
     "Observability browser bundle audit must run after the production Next.js build.");
   assert(releaseLinux.indexOf("npm run audit:observability:bundle") < releaseLinux.indexOf("- name: Immutable Linux release gate"),
     "Observability browser bundle audit must run before the final release audits.");
+  const regression = workflow.slice(workflow.indexOf("  regression:"), workflow.indexOf("  worker_smoke:"));
+  const observabilityStep = regression.match(
+    /^      - name: Observability contract validation\n[\s\S]*?(?=^      - |^  \w)/m
+  )?.[0].trim();
+  assert(observabilityStep === [
+    "- name: Observability contract validation",
+    "        run: npm run verify:observability"
+  ].join("\n"), "Observability documentation/security validation must be unconditional and fail closed.");
+  assert(regression.includes("runs-on: ubuntu-24.04"), "Observability contract validation must run on Linux.");
+  const installedReleaseStep = releaseLinux.match(
+    /^      - name: Mandatory installed-release observability gate\n[\s\S]*?(?=^      - |^  \w)/m
+  )?.[0].trim();
+  assert(installedReleaseStep === [
+    "- name: Mandatory installed-release observability gate",
+    "        run: npm run test:release:linux"
+  ].join("\n"), "Installed-release observability validation must be unconditional and fail closed.");
+  assert((workflow.match(/^[ \t]+run: npm run test:release:linux$/gm) ?? []).length === 1,
+    "Installed-release observability validation must run exactly once.");
+  assert(releaseLinux.indexOf("npm run test:release\n") < releaseLinux.indexOf("npm run test:release:linux"),
+    "Installed-release observability validation must follow immutable release verification.");
+  assert(releaseLinux.indexOf("npm run test:release:linux") < releaseLinux.indexOf("npm run stage:release:artifact"),
+    "Release artifact staging must follow installed-release observability validation.");
+  const deploymentLinux = workflow.slice(workflow.indexOf("  deployment_linux:"), workflow.indexOf("  supply_chain:"));
+  const deploymentStep = deploymentLinux.match(
+    /^      - name: Linux systemd, Nginx, and observability isolation gate\n[\s\S]*?(?=^      - |^  \w|(?![\s\S]))/m
+  )?.[0].trim();
+  assert(deploymentStep === [
+    "- name: Linux systemd, Nginx, and observability isolation gate",
+    "        run: npm run verify:deployment:linux"
+  ].join("\n"), "Linux deployment isolation validation must be unconditional and fail closed.");
   const beforeAcceptance = workflow.split(/^  acceptance:/m)[0];
   assert(!/^    (?:needs|if):/m.test(beforeAcceptance), "Mandatory Linux jobs must execute independently.");
   assert((workflow.match(/^  (?:regression|worker_smoke|release_linux|deployment_linux|supply_chain):$/gm) ?? []).length === 5,
@@ -262,7 +315,7 @@ export async function verifyDeploymentTemplates() {
   assert(ignore.includes(".release-dist") && ignore.includes("ci-release-artifact") && ignore.includes(".production-smoke-dist"),
     "Generated outputs must be ignored.");
 
-  const scanned = [web, worker, migration, nginx, postgresTemplates, webEnv, workerEnv, workflow].join("\n");
+  const scanned = [web, worker, migration, nginx, postgresTemplates, webEnv, workerEnv, migrationEnv, workflow].join("\n");
   assert(!/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(scanned), "Deployment templates contain key material.");
   assert(!/\/Users\/[A-Za-z0-9._-]+\//.test(scanned), "Deployment templates contain a local user path.");
   return Object.freeze({ units: 3, nginx: 1, postgresTemplates: 4, workflow: 1 });
