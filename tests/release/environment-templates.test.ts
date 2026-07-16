@@ -47,6 +47,7 @@ describe("production environment template contract", () => {
     expect(content).toContain("WORKER_CONCURRENCY=2");
     expect(content).toContain("FFMPEG_PATH=/usr/bin/ffmpeg");
     expect(content).toContain("FFPROBE_PATH=/usr/bin/ffprobe");
+    expect(content).toContain("YT_DLP_PATH=/usr/local/bin/yt-dlp");
     expect(content).not.toContain("TRUST_PROXY_MODE");
   });
 

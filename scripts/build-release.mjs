@@ -11,6 +11,7 @@ import {
   RELEASE_MANIFEST_FILE,
   RELEASE_MANIFEST_SCHEMA_VERSION,
   RELEASE_ROOT_DIRECTORY,
+  REQUIRED_EXTERNAL_TOOLS,
   REQUIRED_MIGRATIONS,
   REQUIRED_RUNTIME_PACKAGES,
   assertRegularFile,
@@ -257,6 +258,7 @@ export async function assembleRelease({
       sourceTreeDirty
     }),
     entrypoints: RELEASE_ENTRYPOINTS,
+    externalTools: REQUIRED_EXTERNAL_TOOLS,
     migrations: Object.freeze(migrations),
     runtimeAuthority: "postgres-durable",
     storageMarkerVersion: "v2"

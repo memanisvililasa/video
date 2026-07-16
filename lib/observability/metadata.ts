@@ -85,7 +85,7 @@ export async function createProcessMetadata(
   const commit = manifest.build?.gitCommit;
   const version = manifest.application?.version;
   if (
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     manifest.application?.name !== "videosave" ||
     typeof commit !== "string" ||
     !RELEASE_COMMIT.test(commit) ||

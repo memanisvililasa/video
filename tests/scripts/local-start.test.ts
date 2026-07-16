@@ -17,6 +17,7 @@ function successfulTool(command: string, args: string[]) {
   if (command === "ffmpeg" && args.includes("-encoders")) {
     return { status: 0, stdout: " V....D libx264 H.264\n A....D aac AAC\n", stderr: "" };
   }
+  if (command === "yt-dlp") return { status: 0, stdout: "2026.07.04\n", stderr: "" };
   if (command === "ffmpeg") return { status: 0, stdout: "ffmpeg version 8.1.2 test\n", stderr: "" };
   return { status: 0, stdout: "ffprobe version 8.1.2 test\n", stderr: "" };
 }
@@ -37,7 +38,8 @@ describe("personal-use local launcher", () => {
     })).resolves.toMatchObject({
       nodeVersion: localStart.EXPECTED_NODE_VERSION,
       npmVersion: localStart.EXPECTED_NPM_VERSION,
-      ffmpegVersion: "8.1.2"
+      ffmpegVersion: "8.1.2",
+      ytDlpVersion: "2026.07.04"
     });
   });
 
@@ -61,6 +63,17 @@ describe("personal-use local launcher", () => {
         ? { status: 0, stdout: " A....D aac AAC\n", stderr: "" }
         : successfulTool(command, args)
     })).rejects.toThrow("libx264");
+  });
+
+  it("rejects a yt-dlp version outside the exact approved contract", async () => {
+    await expect(localStart.checkLocalRuntime({
+      nodeVersion: localStart.EXPECTED_NODE_VERSION,
+      npmVersion: localStart.EXPECTED_NPM_VERSION,
+      storagePath: await tempStorage(),
+      run: (command: string, args: string[]) => command === "yt-dlp"
+        ? { status: 0, stdout: "2026.08.01\n", stderr: "" }
+        : successfulTool(command, args)
+    })).rejects.toThrow("yt-dlp 2026.07.04 is required");
   });
 
   it("starts Next.js on IPv4 loopback only after preflight", async () => {

@@ -79,7 +79,7 @@ CLI не создаёт root, отклоняет symlink/non-canonical roots, н
 
 ## Environment и PostgreSQL
 
-Скопировать `deployment/env/*.env.example` вне release и заменить placeholders. Не использовать repository `.env`, `TEST_DATABASE_URL`, shell substitutions или world-readable permissions. Web обязан иметь `HOSTNAME=127.0.0.1`, persistent backends и `TRUST_PROXY_MODE=nginx-single-host`. Worker использует отдельные DB credentials и absolute FFmpeg/ffprobe paths. Migration env содержит DDL-capable role.
+Скопировать `deployment/env/*.env.example` вне release и заменить placeholders. Не использовать repository `.env`, `TEST_DATABASE_URL`, shell substitutions или world-readable permissions. Web обязан иметь `HOSTNAME=127.0.0.1`, persistent backends и `TRUST_PROXY_MODE=nginx-single-host`. Worker использует отдельные DB credentials и absolute FFmpeg/ffprobe/yt-dlp paths. Migration env содержит DDL-capable role.
 
 См. `deployment/postgres/README.md`. Provision roles/database отдельными bootstrap templates, применить migrations как `videosave_migration`, затем exact runtime grants и read-only audit. Runtime roles не владеют schema и не состоят в owner role. PostgreSQL port не публикуется в Internet. Back up DB до migration apply. Только `apply` использует migration advisory lock; `status`, web/worker readiness и cutover blocker check read-only и migrations не применяют.
 
@@ -121,7 +121,7 @@ Public firewall boundary: только TCP 80/443. Web 3000 — loopback. Postgr
 
 ## Первый deployment/cutover
 
-1. Подготовить controlled Linux host/deploy identity и установить exact Node `24.18.0`, npm `11.6.0`, FFmpeg/ffprobe.
+1. Подготовить controlled Linux host/deploy identity и установить exact Node `24.18.0`, npm `11.6.0`, FFmpeg/ffprobe и system yt-dlp `2026.07.04`. yt-dlp не входит в release artifact, должен соответствовать official SHA-256 из release manifest и не должен self-update; до отдельного platform acceptance page extractors остаются отключёнными.
 2. Provision private/TLS PostgreSQL, service users/groups, `/opt/videosave/{.deployment,releases}`, role-specific env files и mounted durable root вне release.
 3. На clean reviewed Linux CI получить verified archive/checksum и полный approved Git commit. Darwin/dirty artifact запрещён.
 4. Проверить archive и install dry-run с `--expected-commit`; command использует общий deployment lock и не оставляет mutation.

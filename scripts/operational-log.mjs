@@ -39,7 +39,7 @@ async function releaseMetadata(nodeEnv) {
   }
   const commit = manifest?.build?.gitCommit;
   const version = manifest?.application?.version;
-  if (manifest?.schemaVersion !== 1 || manifest?.application?.name !== "videosave" ||
+  if (manifest?.schemaVersion !== 2 || manifest?.application?.name !== "videosave" ||
       typeof commit !== "string" || !COMMIT.test(commit) ||
       typeof version !== "string" || !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) {
     throw new TypeError("Production release metadata is incompatible.");

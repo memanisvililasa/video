@@ -5,6 +5,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 // @ts-expect-error Release tooling is intentionally plain Node.js ESM.
 import * as releaseContract from "../../scripts/release-contract.mjs";
+import {
+  APPROVED_YT_DLP_ARTIFACT_SHA256,
+  APPROVED_YT_DLP_VERSION
+} from "@/lib/extractors/yt-dlp/contract";
 
 const {
   APPROVED_NODE_VERSION,
@@ -107,6 +111,7 @@ async function createReleaseFixture(): Promise<string> {
       sourceTreeDirty: false
     },
     entrypoints: RELEASE_ENTRYPOINTS,
+    externalTools: releaseContract.REQUIRED_EXTERNAL_TOOLS,
     migrations,
     runtimeAuthority: "postgres-durable",
     storageMarkerVersion: "v2"
@@ -129,6 +134,34 @@ describe("release toolchain contract", () => {
     })).not.toThrow();
     expect(() => assertReleaseToolchain({ nodeVersion: "24.18.1", npmVersion: APPROVED_NPM_VERSION })).toThrow("Node.js");
     expect(() => assertReleaseToolchain({ nodeVersion: APPROVED_NODE_VERSION, npmVersion: "11.16.0" })).toThrow("npm 11.6.0");
+  });
+
+  it("records yt-dlp as an exact external system dependency", () => {
+    expect(releaseContract.REQUIRED_EXTERNAL_TOOLS).toEqual({
+      ytDlp: {
+        mode: "system",
+        approvedVersion: "2026.07.04",
+        officialArtifactSha256: {
+          portable: "495be29ff4d9d4e9be7eabdfef225221e5d5282e77f2f505abc6dca80349f3fd",
+          linuxX64: "6bbb3d314cde4febe36e5fa1d55462e29c974f63444e707871834f6d8cc210ae"
+        }
+      }
+    });
+    expect(releaseContract.APPROVED_YT_DLP_VERSION).toBe(APPROVED_YT_DLP_VERSION);
+    expect(releaseContract.REQUIRED_EXTERNAL_TOOLS.ytDlp.officialArtifactSha256).toEqual(
+      APPROVED_YT_DLP_ARTIFACT_SHA256
+    );
+  });
+
+  it("rejects a changed external-tool requirement", async () => {
+    const root = await createReleaseFixture();
+    const manifestPath = path.join(root, RELEASE_MANIFEST_FILE);
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.externalTools.ytDlp.approvedVersion = "unapproved";
+    await write(root, RELEASE_MANIFEST_FILE, stableJson(manifest));
+    const records = await hashReleaseFiles(root, { exclude: [RELEASE_CHECKSUMS_FILE] });
+    await write(root, RELEASE_CHECKSUMS_FILE, formatChecksums(records));
+    await expect(verifyReleaseRoot(root)).rejects.toThrow("external-tool");
   });
 
   it("serializes manifest data deterministically", () => {

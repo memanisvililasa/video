@@ -136,6 +136,7 @@ async function createReleaseRoot(
       ...buildOverrides
     },
     entrypoints: contract.RELEASE_ENTRYPOINTS,
+    externalTools: contract.REQUIRED_EXTERNAL_TOOLS,
     migrations,
     runtimeAuthority: "postgres-durable",
     storageMarkerVersion: "v2"

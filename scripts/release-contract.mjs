@@ -11,9 +11,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { POSTGRES_MIGRATION_CATALOG } from "../scripts/postgres-migration-catalog.mjs";
 
-export const RELEASE_MANIFEST_SCHEMA_VERSION = 1;
+export const RELEASE_MANIFEST_SCHEMA_VERSION = 2;
 export const APPROVED_NODE_VERSION = "24.18.0";
 export const APPROVED_NPM_VERSION = "11.6.0";
+export const APPROVED_YT_DLP_VERSION = "2026.07.04";
+export const REQUIRED_EXTERNAL_TOOLS = Object.freeze({
+  ytDlp: Object.freeze({
+    mode: "system",
+    approvedVersion: APPROVED_YT_DLP_VERSION,
+    officialArtifactSha256: Object.freeze({
+      portable: "495be29ff4d9d4e9be7eabdfef225221e5d5282e77f2f505abc6dca80349f3fd",
+      linuxX64: "6bbb3d314cde4febe36e5fa1d55462e29c974f63444e707871834f6d8cc210ae"
+    })
+  })
+});
 export const RELEASE_ROOT_DIRECTORY = ".release-dist/release";
 export const RELEASE_CHECKSUMS_FILE = "checksums.sha256";
 export const RELEASE_MANIFEST_FILE = "release-manifest.json";
@@ -302,6 +313,9 @@ function validateManifest(manifest) {
   }
   if (manifest.runtimeAuthority !== "postgres-durable" || manifest.storageMarkerVersion !== "v2") {
     throw releaseError("Release runtime authority is invalid.");
+  }
+  if (stableJson(manifest.externalTools) !== stableJson(REQUIRED_EXTERNAL_TOOLS)) {
+    throw releaseError("Release external-tool requirements do not match the contract.");
   }
   if (stableJson(manifest.entrypoints) !== stableJson(RELEASE_ENTRYPOINTS)) {
     throw releaseError("Release entrypoints do not match the contract.");

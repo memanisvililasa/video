@@ -22,7 +22,7 @@ PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media sto
 
 ## Локальная разработка
 
-Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, а также FFmpeg/ffprobe с encoders `libx264` и `aac`. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
+Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, FFmpeg/ffprobe с encoders `libx264` и `aac`, а также system binary yt-dlp `2026.07.04`. yt-dlp пока используется только подготовленным server-only extractor foundation: platform-page extractors остаются отключёнными до отдельных acceptance stages. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
 
 ```bash
 corepack npm install
@@ -35,7 +35,7 @@ corepack npm run local
 
 Local jobs хранятся в памяти процесса: после restart незавершённая задача не восстанавливается. Refresh страницы в пределах живого процесса восстанавливает текущий job по безопасному session record без сохранения source URL. Expired media очищаются при старте local runtime и последующими bounded periodic sweeps; active jobs защищены от cleanup.
 
-Если preflight сообщает об отсутствии FFmpeg/ffprobe или `libx264`/`aac`, установите полную сборку FFmpeg для macOS и повторите `local:check`. Если toolchain не совпадает, запускайте npm через Corepack, чтобы использовалась версия из `packageManager`. Не публикуйте local listener в LAN и не меняйте hostname на `0.0.0.0` без отдельной private-access boundary.
+Если preflight сообщает об отсутствии FFmpeg/ffprobe или `libx264`/`aac`, установите полную сборку FFmpeg для macOS. yt-dlp должен быть exact approved version; runtime self-update, user config, cookies, browser profiles, plugins и remote components не используются. После исправления повторите `local:check`. Если toolchain не совпадает, запускайте npm через Corepack, чтобы использовалась версия из `packageManager`. Не публикуйте local listener в LAN и не меняйте hostname на `0.0.0.0` без отдельной private-access boundary.
 
 Проверки:
 

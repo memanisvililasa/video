@@ -61,7 +61,7 @@ describe("observability configuration", () => {
       role: "worker",
       processInstanceId: () => "f".repeat(32),
       readManifest: async () => JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         application: { name: "videosave", version: "1.0.0" },
         build: { gitCommit: "a".repeat(40) }
       })

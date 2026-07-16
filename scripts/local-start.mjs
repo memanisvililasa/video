@@ -3,6 +3,7 @@ import { access, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { APPROVED_YT_DLP_VERSION } from "./release-contract.mjs";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const packageJson = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
@@ -59,6 +60,19 @@ export async function checkLocalRuntime(options = {}) {
   const encoders = commandOutput(run("ffmpeg", ["-hide_banner", "-encoders"]), "ffmpeg encoder check");
   if (!/\blibx264\b/.test(encoders)) throw failure("FFmpeg does not provide the libx264 encoder.");
   if (!/^\s*A[.A-Z]{5}\s+aac\s/m.test(encoders)) throw failure("FFmpeg does not provide the AAC encoder.");
+  const ytDlpVersion = commandOutput(run("yt-dlp", [
+    "--ignore-config",
+    "--no-config-locations",
+    "--no-plugin-dirs",
+    "--no-remote-components",
+    "--no-cookies",
+    "--no-cookies-from-browser",
+    "--no-netrc",
+    "--version"
+  ]), "yt-dlp").trim();
+  if (ytDlpVersion !== APPROVED_YT_DLP_VERSION) {
+    throw failure(`yt-dlp ${APPROVED_YT_DLP_VERSION} is required; found ${ytDlpVersion || "unknown"}.`);
+  }
 
   await mkdir(storagePath, { recursive: true });
   await access(storagePath, constants.R_OK | constants.W_OK | constants.X_OK).catch(() => {
@@ -69,6 +83,7 @@ export async function checkLocalRuntime(options = {}) {
     nodeVersion,
     npmVersion,
     ffmpegVersion: ffmpegVersion.match(/^ffmpeg version\s+([^\s]+)/m)?.[1] ?? "available",
+    ytDlpVersion,
     storagePath
   });
 }
@@ -79,7 +94,7 @@ export async function main(argv = process.argv.slice(2), options = {}) {
   const result = await checkLocalRuntime(options);
   const output = options.output ?? process.stdout;
   output.write(
-    `Local runtime ready (Node.js ${result.nodeVersion}, npm ${result.npmVersion}, FFmpeg ${result.ffmpegVersion}).\n`
+    `Local runtime ready (Node.js ${result.nodeVersion}, npm ${result.npmVersion}, FFmpeg ${result.ffmpegVersion}, yt-dlp ${result.ytDlpVersion}).\n`
   );
   if (argv.includes("--check")) return 0;
 
