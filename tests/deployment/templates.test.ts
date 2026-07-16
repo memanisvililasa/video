@@ -101,6 +101,29 @@ describe("Phase A deployment templates", () => {
       .toBeLessThan(workflow.indexOf("actions/upload-artifact@"));
   });
 
+  it("runs the observability browser bundle audit once after the Linux production build", async () => {
+    const workflow = await file(".github/workflows/validate.yml");
+    const releaseLinux = workflow.slice(workflow.indexOf("  release_linux:"), workflow.indexOf("  deployment_linux:"));
+    const auditCommand = "npm run audit:observability:bundle";
+    const auditStep = releaseLinux.match(
+      /^      - name: Mandatory observability browser bundle audit\n[\s\S]*?(?=^      - |^  \w)/m
+    )?.[0].trim();
+
+    expect(workflow.match(/^[ \t]+run: npm run audit:observability:bundle$/gm)).toHaveLength(1);
+    expect(releaseLinux).toContain("runs-on: ubuntu-24.04");
+    expect(auditStep).toBe([
+      "- name: Mandatory observability browser bundle audit",
+      "        run: npm run audit:observability:bundle"
+    ].join("\n"));
+    expect(releaseLinux.indexOf("npm run build\n")).toBeLessThan(releaseLinux.indexOf(auditCommand));
+    expect(releaseLinux.indexOf(auditCommand)).toBeLessThan(releaseLinux.indexOf("- name: Immutable Linux release gate"));
+    expect(workflow).toContain("needs: [regression, worker_smoke, release_linux, deployment_linux, supply_chain]");
+    expect(workflow).toContain('test "$RELEASE_LINUX_RESULT" = "success"');
+    expect(workflow).toContain("permissions:\n  contents: read");
+    expect(workflow).not.toContain("${{ secrets.");
+    expect(workflow).not.toMatch(/^\s*(?:deploy|production):\s*$/m);
+  });
+
   it("keeps smoke, installed release, systemd and Nginx gates mandatory on Linux", async () => {
     const workflow = await file(".github/workflows/validate.yml");
     expect(workflow.match(/runs-on: ubuntu-24\.04/g)).toHaveLength(6);

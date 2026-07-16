@@ -201,6 +201,7 @@ export async function verifyDeploymentTemplates() {
     "npm run test:postgres",
     "npm run check:cutover:test",
     "npm run test:worker:smoke",
+    "npm run audit:observability:bundle",
     "npm run build:release",
     "npm run verify:release",
     "npm run test:release:linux",
@@ -226,6 +227,24 @@ export async function verifyDeploymentTemplates() {
   const actionRefs = [...workflow.matchAll(/uses:\s+[^@\s]+@([^\s#]+)/g)].map((match) => match[1]);
   assert(actionRefs.length > 0 && actionRefs.every((ref) => /^[a-f0-9]{40}$/.test(ref)), "CI actions must use immutable SHAs.");
   assert(!/continue-on-error:\s*true/.test(workflow), "Mandatory CI gates must not continue on error.");
+  const releaseLinux = workflow.slice(workflow.indexOf("  release_linux:"), workflow.indexOf("  deployment_linux:"));
+  const expectedBundleAuditStep = [
+    "- name: Mandatory observability browser bundle audit",
+    "        run: npm run audit:observability:bundle"
+  ].join("\n");
+  const bundleAuditStep = releaseLinux.match(
+    /^      - name: Mandatory observability browser bundle audit\n[\s\S]*?(?=^      - |^  \w)/m
+  )?.[0].trim();
+  assert((workflow.match(/^[ \t]+run: npm run audit:observability:bundle$/gm) ?? []).length === 1,
+    "Observability browser bundle audit must run exactly once.");
+  assert(releaseLinux.includes("runs-on: ubuntu-24.04"),
+    "Observability browser bundle audit must run in the mandatory Linux release job.");
+  assert(bundleAuditStep === expectedBundleAuditStep,
+    "Observability browser bundle audit step must be unconditional and fail closed.");
+  assert(releaseLinux.indexOf("npm run build\n") < releaseLinux.indexOf("npm run audit:observability:bundle"),
+    "Observability browser bundle audit must run after the production Next.js build.");
+  assert(releaseLinux.indexOf("npm run audit:observability:bundle") < releaseLinux.indexOf("- name: Immutable Linux release gate"),
+    "Observability browser bundle audit must run before the final release audits.");
   const beforeAcceptance = workflow.split(/^  acceptance:/m)[0];
   assert(!/^    (?:needs|if):/m.test(beforeAcceptance), "Mandatory Linux jobs must execute independently.");
   assert((workflow.match(/^  (?:regression|worker_smoke|release_linux|deployment_linux|supply_chain):$/gm) ?? []).length === 5,

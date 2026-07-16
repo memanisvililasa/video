@@ -173,6 +173,8 @@ jobs:
           npm run typecheck
           npm run build:worker
           npm run build
+      - name: Mandatory observability browser bundle audit
+        run: npm run audit:observability:bundle
       - name: Immutable Linux release gate
         run: |
           npm run build:release
