@@ -1,0 +1,220 @@
+# VideoSave Stage 6.1 Phase A host inventory template.
+# This file is non-secret documentation. Keep it as NO-GO until every required
+# operator value, owner, and evidence reference is complete and reviewed.
+#
+# Never store passwords, database connection URLs, test database URLs, tokens,
+# OAuth credentials, private keys, SSH private keys, TLS private keys, backup
+# encryption keys, webhooks, cookies, authorization headers, signed URLs,
+# production payloads, populated environment files, or raw environment dumps.
+
+metadata:
+  schemaVersion: 1
+  stage: "6.1"
+  scope: "controlled-single-host-phase-a"
+  status: "pending-operator-inventory"
+  decision: "NO-GO"
+  containsSecrets: false
+  lastReviewedAt: null # ISO-8601 timestamp after operator review.
+  evidenceReference: null # Non-secret ticket, change record, or document ID.
+
+repository:
+  owner: "memanisvililasa"
+  name: "video"
+  branchAtCheckpoint: "main"
+  expectedCommit: "11f533854a22a522b8b37ae10e618b17b546b91c"
+  repositoryAcceptance: "conditional-go"
+  stage5RepositoryWorkComplete: true
+  productionDeploymentStarted: false
+
+release:
+  sourcePolicy: "exact-successful-github-actions-artifact-only"
+  gitCheckoutIsProductionRelease: false
+  expectedWorkflowRunId: 29480413056
+  expectedArtifactId: 8368276906
+  expectedArtifactName: "videosave-phase-a-release-11f533854a22a522b8b37ae10e618b17b546b91c"
+  expectedReleaseId: "videosave-1.0.0-11f533854a22"
+  exactWorkflowVerified: false
+  artifactProvenanceVerified: false
+  compatibleRollbackReleaseId: null
+  compatibleRollbackCommit: null
+
+host:
+  provider: null
+  region: null
+  hostId: null
+  operatingSystem: "Ubuntu Server 24.04 LTS"
+  operatingSystemConfirmed: false
+  architecture: "x86_64"
+  architectureConfirmed: false
+  cpuCount: 8
+  memoryGiB: 32
+  rootDiskGiB: null
+  provisionalSizing: true
+  sizingEvidenceReference: null
+
+access:
+  deployUsername: null
+  approvedAdministratorCidrs: []
+  vpnRequired: null
+  sshPublicAccessRestricted: false
+  breakGlassProcedureReference: null
+
+network:
+  topology: "single-controlled-linux-host"
+  nginxOnlyPublicIngress: true
+  publicTcpPorts:
+    - 80
+    - 443
+  webListener: "loopback-only"
+  workerObservabilityListener: "loopback-only"
+  postgresqlConnectivity: "private-network-only"
+  directOriginPubliclyReachable: false
+
+DNS:
+  publicHostname: null
+  ownershipClass: null # Team/role only; do not put provider credentials here.
+  provider: null
+  recordPlanReference: null
+
+TLS:
+  approach: null # "operator-managed-acme" or "managed-certificate" after review.
+  certificateOwner: null
+  caFileLocation: null # Host path metadata only; never embed certificate-key content.
+  renewalProcedureReference: null
+  verifiedTlsRequired: true
+
+firewall:
+  model: null
+  providerSecurityGroup: null # Non-secret group ID or name when approved.
+  trafficGate: null
+  sshRestrictedToApprovedCidrsOrVpn: false
+  postgresqlPubliclyReachable: false
+  internalPortsPubliclyReachable: false
+
+users:
+  webUser: "videosave-web"
+  workerUser: "videosave-worker"
+  migrationUser: "videosave-migrate"
+  mediaGroup: "videosave-media"
+  serviceUsersNonRoot: true
+  serviceUsersInteractiveLoginDisabled: null
+  deployUserSeparatedFromServiceUsers: null
+
+PostgreSQL:
+  provider: null
+  versionMajor: 17
+  databaseName: null
+  privateNetworkModel: null
+  tlsRequired: true
+  tlsCaFileLocation: null # Host path metadata only; no connection URL or credential.
+  migrationRole: "videosave_migration"
+  webRole: "videosave_web"
+  workerRole: "videosave_worker"
+  leastPrivilegeAuditPlanned: false
+  publicConnectivityAllowed: false
+
+durableVolume:
+  provider: null
+  device: null
+  mount: "/var/lib/videosave/media"
+  fsType: null # Must resolve to ext4 or XFS for this Phase A decision.
+  allowedFileSystems:
+    - "ext4"
+    - "xfs"
+  capacityGiB: 500
+  provisionalCapacity: true
+  persistentBlockStorage: true
+  nfsAllowed: false
+  objectStorageAllowed: false
+  mediaAuthorityId: null # Non-secret 32-character lowercase hexadecimal ID.
+  survivesHostRebootExpected: true
+  hardLinkProbePlanned: false
+  atomicRenameProbePlanned: false
+
+application:
+  processModel: "separate-web-worker-and-explicit-migration-oneshot"
+  expectedWorkload: null
+  jobConcurrency: null
+  maxMediaSizeMiB: 500
+  maxMediaDurationMinutes: 30
+  maxMediaResolution: null
+  ffmpegPathExpected: "/usr/bin/ffmpeg"
+  ffprobePathExpected: "/usr/bin/ffprobe"
+  immutableReleaseDirectories: true
+  atomicPromotionRequired: true
+
+observability:
+  platform: null
+  collectionModel: "operator-managed-loopback-scrape"
+  alertDeliveryClass: null # Delivery class/channel name only; never a webhook.
+  journaldTransportRequired: true
+  applicationLogFilesAllowed: false
+  internalEndpointsLoopbackOnly: true
+  retentionPolicyReference: null
+
+backups:
+  postgresqlEncrypted: true
+  destination: null # Provider/product/region metadata only.
+  retention: null
+  restoreTestApproach: null
+  restoreTestEvidenceReference: null
+  rpo: null
+  rto: null
+  mediaBackupRequired: null
+
+cutover:
+  productionTrafficAllowed: false
+  trafficGate: null
+  trafficEnableOwner: null
+  noEgressSmokeRequired: true
+  controlledEgressSmokeRequired: false
+  exactReleaseAcceptanceRequired: true
+  operatorApprovalReference: null
+
+rollback:
+  releaseId: null
+  fullCommit: null
+  compatibilityVerified: false
+  trafficCloseFirst: true
+  automaticDatabaseDownMigrationAllowed: false
+  legacyMemoryReleaseAllowedAfterDurableJob: false
+  responsibleOperator: null
+
+ownership:
+  responsibleOperator: null
+  deploymentApprover: null
+  databaseOwner: null
+  storageOwner: null
+  networkOwner: null
+  dnsOwner: null
+  tlsOwner: null
+  monitoringOwner: null
+  incidentOwner: null
+
+maintenanceWindow:
+  start: null # ISO-8601 timestamp or approved recurring-window reference.
+  end: null
+  timezone: null
+  changeRecordReference: null
+
+acceptance:
+  providerAndRegionApproved: false
+  hostSizingApproved: false
+  accessBoundaryApproved: false
+  dnsTlsFirewallApproved: false
+  postgresqlModelApproved: false
+  backupRestorePlanApproved: false
+  durableVolumeApproved: false
+  workloadConcurrencyApproved: false
+  observabilityAlertingApproved: false
+  maintenanceRpoRtoApproved: false
+  trafficGateApproved: false
+  rollbackCandidateApproved: false
+  responsibleOperatorAssigned: false
+  exactProvenanceVerified: false
+  secretScanPassed: false
+  yamlSyntaxPassed: false
+  criticalBlockersResolved: false
+  highBlockersResolved: false
+  stage61GoApproved: false
+  nextExecutableStage: "6.2 Host bootstrap"

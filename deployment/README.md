@@ -2,6 +2,8 @@
 
 Этот runbook описывает воспроизводимый, но ещё не выполненный deployment. Все команды ниже являются operator-reviewed примерами. Приложение, npm scripts и tests не создают users, не монтируют filesystem, не меняют firewall/TLS, не устанавливают units и не переключают production traffic.
 
+Stage 5 repository work завершён с итогом Conditional GO. Stage 6 deployment ещё не начался: текущий статус — awaiting non-secret operator inventory, production traffic запрещён. Перед любым Stage 6.2 host bootstrap оператор должен заполнить [non-secret host inventory template](inventory/phase-a-host.example.yml) и получить GO по [Stage 6 Phase A decision record](../docs/adr/0002-phase-a-production-deployment-decision-record.md). Phase B этим checkpoint не разрешается.
+
 ## Topology
 
 ```text

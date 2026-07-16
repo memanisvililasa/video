@@ -15,11 +15,11 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 ## Production-архитектура
 
-Архитектура controlled/private production deployment для Phase A и границы будущей Phase B зафиксированы в [ADR 0001](docs/adr/0001-production-deployment-architecture.md).
+Архитектура controlled/private production deployment для Phase A и границы будущей Phase B зафиксированы в [ADR 0001](docs/adr/0001-production-deployment-architecture.md). Stage 6 operator decisions, provisional host specification, tooling readiness и fail-closed GO/NO-GO boundary находятся в [ADR 0002](docs/adr/0002-phase-a-production-deployment-decision-record.md); будущий non-secret host inventory заполняется по [YAML template](deployment/inventory/phase-a-host.example.yml).
 
-Текущий репозиторий ещё не готов к публичному multi-user production. Phase A architecture утверждена, но реализация Stage 5.9 продолжается.
+Stage 5 repository work завершён с итогом Conditional GO. Stage 6 production deployment ещё не начался: текущий статус — awaiting non-secret operator inventory, production traffic запрещён, а следующий исполнимый этап `6.2 Host bootstrap` блокируется до Stage 6.1 GO. Репозиторий не заявляет готовность к публичному multi-user production.
 
-PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone release, systemd/Nginx templates, privilege/volume/release tooling и host runbook реализованы; C1 добавляет read-only cutover blocker, bounded installer/deployment lock, exact commit, real-role PostgreSQL и Linux validation gates. Финальное evidence review остаётся 5.9.8C2. Реальный production deployment не выполнен.
+PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media storage и отдельный compiled Node worker доступны через явные server-only composition roots. Worker содержит elected lifecycle coordinator для startup/periodic recovery, persistent retry scheduling, reconciliation и expiration. Role-aware web composition реализован: `APP_PROCESS_ROLE=web` использует только PostgreSQL job/queue/artifact state и read-only durable-volume delivery без memory/local fallback. Local/test по-прежнему выбирает process-local compatibility runtime. Worker не запускается вместе с Next.js. Standalone release, systemd/Nginx templates, privilege/volume/release tooling, observability contracts и host runbook реализованы и прошли Stage 5 repository acceptance. Реальный production deployment не выполнен.
 
 ## Ограничения
 
@@ -57,6 +57,8 @@ Builder создаёт allowlist-only root `.release-dist/release`, затем m
 ## Phase A deployment boundary (5.9.8B2)
 
 Systemd/Nginx/PostgreSQL templates, durable-volume authority tooling, immutable install/promotion, rollback compatibility, production smoke и validation-only CI описаны в [deployment runbook](deployment/README.md). Это repository templates/tooling: production host, traffic, TLS, firewall и services не изменялись.
+
+Stage 6.1 не выполняет deployment и не создаёт production resources. Его decision record и host inventory должны получить GO до любых действий Stage 6.2.
 
 ## ENV
 
