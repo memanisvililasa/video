@@ -101,6 +101,7 @@ export type MediaDownloadUiState =
     }>);
 
 export type MediaDownloadUiEvent =
+  | Readonly<{ type: "RESTORE_SESSION"; raw: string | null; nowMs: number }>
   | Readonly<{ type: "RESET"; requestGeneration: number }>
   | Readonly<{ type: "START_NEW_JOB"; requestGeneration: number }>
   | Readonly<{ type: "EXTRACT_STARTED"; requestGeneration: number }>
@@ -134,6 +135,10 @@ export const INITIAL_MEDIA_DOWNLOAD_UI_STATE: MediaDownloadUiState = Object.free
   status: "idle",
   requestGeneration: 0
 });
+
+export const MEDIA_JOB_SESSION_STORAGE_KEY = "videosave.personal-job.v1";
+const MEDIA_JOB_SESSION_VERSION = 1;
+const MAX_MEDIA_JOB_SESSION_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 function normalizeProgress(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
@@ -229,6 +234,124 @@ function freezeSelection(selection: MediaJobSelection): MediaJobSelection {
     selectedFormatId: selection.selectedFormatId,
     processingPreset: selection.processingPreset,
     rightsConfirmed: selection.rightsConfirmed
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function persistedJobState(state: MediaDownloadUiState): state is MediaDownloadUiState & Readonly<{
+  selection: MediaJobSelection;
+  jobId: string;
+  progress?: number;
+  processingPreset?: UserProcessingPreset;
+  createdAt?: string;
+  expiresAt?: string | null;
+}> {
+  return (
+    "selection" in state &&
+    "jobId" in state &&
+    isSafeJobId(state.jobId) &&
+    ["queued", "running", "ready", "downloading", "success", "polling-timeout", "network-error"].includes(state.status) &&
+    !(state.status === "network-error" && state.operation !== "poll")
+  );
+}
+
+export function serializeMediaJobSession(state: MediaDownloadUiState, nowMs = Date.now()): string | null {
+  if (!persistedJobState(state) || !Number.isFinite(nowMs)) return null;
+  const processingPreset = "processingPreset" in state
+    ? state.processingPreset
+    : state.selection.processingPreset;
+  const createdAt = "createdAt" in state ? state.createdAt : new Date(nowMs).toISOString();
+  const expiresAt = "expiresAt" in state ? state.expiresAt : null;
+  return JSON.stringify({
+    version: MEDIA_JOB_SESSION_VERSION,
+    savedAt: nowMs,
+    jobId: state.jobId,
+    progress: "progress" in state ? normalizeProgress(state.progress) : 0,
+    processingPreset,
+    createdAt,
+    expiresAt,
+    selection: {
+      media: state.selection.media,
+      selectedFormatId: state.selection.selectedFormatId,
+      processingPreset: state.selection.processingPreset,
+      rightsConfirmed: false
+    }
+  });
+}
+
+export function restoreMediaJobSession(raw: string | null, nowMs = Date.now()): MediaDownloadUiState | null {
+  if (typeof raw !== "string" || raw.length === 0 || raw.length > 32_768 || !Number.isFinite(nowMs)) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "version", "savedAt", "jobId", "progress", "processingPreset", "createdAt", "expiresAt", "selection"
+    ]) ||
+    value.version !== MEDIA_JOB_SESSION_VERSION
+  ) return null;
+  if (
+    typeof value.savedAt !== "number" ||
+    !Number.isFinite(value.savedAt) ||
+    value.savedAt > nowMs + 5 * 60 * 1000 ||
+    nowMs - value.savedAt > MAX_MEDIA_JOB_SESSION_AGE_MS ||
+    !isSafeJobId(value.jobId) ||
+    typeof value.progress !== "number" ||
+    !Number.isFinite(value.progress) ||
+    !isUserProcessingPreset(value.processingPreset) ||
+    !isRecord(value.selection) ||
+    !hasExactKeys(value.selection, ["media", "selectedFormatId", "processingPreset", "rightsConfirmed"]) ||
+    value.selection.rightsConfirmed !== false ||
+    !isRecord(value.selection.media) ||
+    !hasExactKeys(value.selection.media, ["platform", "title", "duration", "qualities"]) ||
+    !Array.isArray(value.selection.media.qualities) ||
+    value.selection.media.qualities.some((quality) =>
+      !isRecord(quality) || !hasExactKeys(quality, ["id", "label", "meta"])
+    )
+  ) {
+    return null;
+  }
+  const media = freezeMedia(value.selection.media as MediaSelectionData);
+  const selectedFormatId = value.selection.selectedFormatId;
+  const createdAt = normalizeIso(value.createdAt);
+  const expiresAt = value.expiresAt === null ? null : normalizeIso(value.expiresAt);
+  if (
+    !media ||
+    typeof selectedFormatId !== "string" ||
+    !FORMAT_ID.test(selectedFormatId) ||
+    !media.qualities.some((quality) => quality.id === selectedFormatId) ||
+    value.selection.processingPreset !== value.processingPreset ||
+    !createdAt ||
+    (value.expiresAt !== null && !expiresAt) ||
+    (expiresAt && Date.parse(expiresAt) <= nowMs)
+  ) {
+    return null;
+  }
+  const selection = freezeSelection({
+    media,
+    selectedFormatId,
+    processingPreset: value.processingPreset,
+    rightsConfirmed: false
+  });
+  return Object.freeze({
+    status: "network-error",
+    requestGeneration: 0,
+    selection,
+    jobId: value.jobId,
+    operation: "poll",
+    message: "Восстанавливаем состояние задачи"
   });
 }
 
@@ -429,6 +552,10 @@ export function mediaDownloadUiReducer(
   event: MediaDownloadUiEvent
 ): MediaDownloadUiState {
   switch (event.type) {
+    case "RESTORE_SESSION":
+      return state.status === "idle" && state.requestGeneration === 0
+        ? restoreMediaJobSession(event.raw, event.nowMs) ?? state
+        : state;
     case "RESET":
       return isValidGeneration(event.requestGeneration) && event.requestGeneration >= state.requestGeneration
         ? Object.freeze({ status: "idle", requestGeneration: event.requestGeneration })

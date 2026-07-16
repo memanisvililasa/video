@@ -161,7 +161,8 @@ function createRejectedResult(config: RateLimitConfig, key: string, resetAt: num
   };
 }
 
-// Dev/single-process fallback. TODO: move production rate limiting to Redis/Upstash.
+// Process-local limiter for personal/local and controlled single-host use.
+// A public multi-user distributed limiter is outside the accepted product scope.
 export function checkRateLimit(input: RateLimitKeyInput, overrideConfig: Partial<RateLimitConfig> = {}): RateLimitResult {
   const bucket = input.bucket ?? "default";
   const baseConfig = getRateLimitConfig(bucket);

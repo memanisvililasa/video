@@ -7,12 +7,15 @@ import { VideoResultCard } from "@/components/video-result-card";
 import type { CreateDownloadJobRequest } from "@/lib/api/media-job-dto";
 import {
   INITIAL_MEDIA_DOWNLOAD_UI_STATE,
+  MEDIA_JOB_SESSION_STORAGE_KEY,
   canRetryJobSubmit,
   canSubmitJob,
   getSafeStatusMessage,
   isJobActive,
   isTerminalState,
   mediaDownloadUiReducer,
+  restoreMediaJobSession,
+  serializeMediaJobSession,
   type MediaDownloadUiState,
   type MediaSelectionData,
   type SafeUiError
@@ -177,6 +180,7 @@ export function VideoDownloader({ pollingPolicy }: VideoDownloaderProps = {}) {
   const generationRef = useRef(0);
   const stateRef = useRef(uiState);
   const pollingControllerRef = useRef<MediaJobPollingController | null>(null);
+  const restoredJobIdRef = useRef<string | null>(null);
   stateRef.current = uiState;
 
   const validationError = useMemo(() => validateUrl(url), [url]);
@@ -203,6 +207,43 @@ export function VideoDownloader({ pollingPolicy }: VideoDownloaderProps = {}) {
       if (pollingControllerRef.current === controller) pollingControllerRef.current = null;
     };
   }, [pollingPolicy]);
+
+  useEffect(() => {
+    try {
+      const raw = globalThis.sessionStorage.getItem(MEDIA_JOB_SESSION_STORAGE_KEY);
+      const restored = restoreMediaJobSession(raw);
+      if (restored && "jobId" in restored && typeof restored.jobId === "string") {
+        restoredJobIdRef.current = restored.jobId;
+      }
+      else globalThis.sessionStorage.removeItem(MEDIA_JOB_SESSION_STORAGE_KEY);
+      dispatch({ type: "RESTORE_SESSION", raw, nowMs: Date.now() });
+    } catch {
+      restoredJobIdRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const restoredJobId = restoredJobIdRef.current;
+    if (
+      restoredJobId &&
+      uiState.status === "network-error" &&
+      uiState.operation === "poll" &&
+      uiState.jobId === restoredJobId
+    ) {
+      restoredJobIdRef.current = null;
+      pollingControllerRef.current?.resumePolling();
+    }
+  }, [uiState]);
+
+  useEffect(() => {
+    try {
+      const serialized = serializeMediaJobSession(uiState);
+      if (serialized) globalThis.sessionStorage.setItem(MEDIA_JOB_SESSION_STORAGE_KEY, serialized);
+      else globalThis.sessionStorage.removeItem(MEDIA_JOB_SESSION_STORAGE_KEY);
+    } catch {
+      // Storage may be unavailable in privacy-restricted browser contexts.
+    }
+  }, [uiState]);
 
   async function handleExtract(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

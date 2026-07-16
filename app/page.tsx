@@ -9,7 +9,7 @@ import { VideoDownloader } from "@/components/video-downloader";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
-  description: "VideoSave помогает проверить публичные видео и подготовлен к безопасному frontend flow без обхода ограничений."
+  description: "VideoSave локально загружает и обрабатывает публичные прямые ссылки на видео без обхода ограничений."
 };
 
 export default function HomePage() {
@@ -19,7 +19,7 @@ export default function HomePage() {
     name: "VideoSave",
     applicationCategory: "UtilitiesApplication",
     operatingSystem: "Web",
-    description: "Frontend-интерфейс для проверки публичных видео, на которые у пользователя есть права.",
+    description: "Personal-use инструмент для публичных прямых видеофайлов, на которые у пользователя есть права.",
     offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" }
   };
 
@@ -32,7 +32,7 @@ export default function HomePage() {
         <div className="relative mx-auto max-w-4xl px-5 text-center sm:px-8">
           <div className="inline-flex items-center gap-2 rounded-full border border-blue-100 bg-white/90 px-3 py-1.5 text-xs font-bold text-brand shadow-sm">
             <Icon name="shield" className="h-3.5 w-3.5" />
-            Этап 2: frontend downloader UI
+            Personal-use local runtime
           </div>
           <h1 className="mx-auto mt-6 max-w-3xl text-4xl font-extrabold leading-[1.04] tracking-[-.065em] text-ink sm:text-6xl">
             VideoSave для публичных видео с <span className="text-brand">проверкой прав</span>
@@ -61,7 +61,7 @@ export default function HomePage() {
 
       <section className="mx-auto max-w-5xl px-5 pb-16 sm:px-8 sm:pb-20">
         <LegalCallout>
-          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, приватные аккаунты или технические ограничения платформ. На Этапе 4 поддерживаются только публичные прямые HTTP(S)-ссылки на медиафайлы; платформенные extractor-ы остаются безопасными placeholders.
+          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, приватные аккаунты или технические ограничения платформ. Сейчас поддерживаются только публичные прямые HTTP(S)-ссылки на `.mp4`, `.webm` и `.mov`; ссылки на страницы платформ отклоняются.
         </LegalCallout>
       </section>
     </>

@@ -891,6 +891,5 @@ export const env = {
   ffmpegThreads: positiveIntegerFromEnv("FFMPEG_THREADS", 2),
   maxConcurrentJobs: numberFromEnv("MAX_CONCURRENT_JOBS", 2),
   maxQueuedJobs: numberFromEnv("MAX_QUEUED_JOBS", 100),
-  redisUrl: process.env.REDIS_URL || "",
   nodeEnv: process.env.NODE_ENV || "development"
 } as const;

@@ -4,8 +4,8 @@ import { placeholderExtractors } from "@/lib/extractors/placeholders";
 import type { Extractor } from "@/lib/extractors/types";
 
 const extractors: Extractor[] = [
-  ...placeholderExtractors,
-  genericDirectMediaExtractor
+  genericDirectMediaExtractor,
+  ...placeholderExtractors
 ];
 
 export function listExtractors(): readonly Extractor[] {

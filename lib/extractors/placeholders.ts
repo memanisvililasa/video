@@ -6,17 +6,16 @@ type PlatformPlaceholder = {
   id: string;
   name: string;
   domains: readonly string[];
-  protected?: boolean;
 };
 
 const platforms: readonly PlatformPlaceholder[] = [
-  { id: "youtube", name: "YouTube", domains: ["youtube.com", "youtu.be", "youtube-nocookie.com"], protected: true },
-  { id: "tiktok", name: "TikTok", domains: ["tiktok.com"], protected: true },
-  { id: "instagram", name: "Instagram", domains: ["instagram.com"], protected: true },
-  { id: "facebook", name: "Facebook", domains: ["facebook.com", "fb.watch"], protected: true },
-  { id: "x", name: "X", domains: ["x.com", "twitter.com"], protected: true },
-  { id: "reddit", name: "Reddit", domains: ["reddit.com", "redd.it"], protected: false },
-  { id: "vimeo", name: "Vimeo", domains: ["vimeo.com", "player.vimeo.com"], protected: false }
+  { id: "youtube", name: "YouTube", domains: ["youtube.com", "youtu.be", "youtube-nocookie.com"] },
+  { id: "tiktok", name: "TikTok", domains: ["tiktok.com"] },
+  { id: "instagram", name: "Instagram", domains: ["instagram.com"] },
+  { id: "facebook", name: "Facebook", domains: ["facebook.com", "fb.watch"] },
+  { id: "x", name: "X", domains: ["x.com", "twitter.com"] },
+  { id: "reddit", name: "Reddit", domains: ["reddit.com", "redd.it"] },
+  { id: "vimeo", name: "Vimeo", domains: ["vimeo.com", "player.vimeo.com"] }
 ];
 
 function hostnameMatches(hostname: string, domains: readonly string[]): boolean {
@@ -25,11 +24,11 @@ function hostnameMatches(hostname: string, domains: readonly string[]): boolean 
 }
 
 function errorFor(platform: PlatformPlaceholder): AppError {
-  if (platform.protected) {
-    return new AppError(API_ERROR_CODES.PROTECTED_CONTENT, `${platform.name}: приватный, защищённый или требующий авторизации контент не поддерживается.`, 403);
-  }
-
-  return new AppError(API_ERROR_CODES.UNSUPPORTED_URL, `${platform.name} пока не поддерживается.`, 400);
+  return new AppError(
+    API_ERROR_CODES.UNSUPPORTED_URL,
+    `${platform.name}: ссылки на страницы пока не поддерживаются. Используйте прямую публичную ссылку на .mp4, .webm или .mov.`,
+    400
+  );
 }
 
 function createPlaceholder(platform: PlatformPlaceholder): Extractor {

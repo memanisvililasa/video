@@ -1,6 +1,6 @@
 import "server-only";
 import { createReadStream } from "node:fs";
-import { parseApplicationProcessRole } from "@/lib/config/env";
+import { env, parseApplicationProcessRole } from "@/lib/config/env";
 import type { PersistentDownloadJobService } from "@/lib/jobs/postgres/web-service";
 import type { MediaFileDelivery } from "@/lib/storage/file-delivery";
 
@@ -27,10 +27,25 @@ export type CreateRoleAwareWebRuntimeResolverOptions = Readonly<{
 }>;
 
 async function createLocalWebRuntime(): Promise<WebApiRuntime> {
-  const [downloadService, localStorage] = await Promise.all([
+  const [downloadService, localStorage, storageCleanup, localQueue, localMaintenance] = await Promise.all([
     import("@/lib/jobs/download-service"),
-    import("@/lib/storage/local-storage")
+    import("@/lib/storage/local-storage"),
+    import("@/lib/storage/cleanup"),
+    import("@/lib/jobs/queue"),
+    import("@/lib/jobs/local-maintenance")
   ]);
+  const maintenance = localMaintenance.createLocalMaintenanceLifecycle({
+    intervalMs: Math.min(15 * 60_000, Math.max(60_000, env.tempFileTtlMinutes * 30_000)),
+    async maintenance() {
+      const jobs = await localQueue.listJobs();
+      const protectedJobIds = new Set(
+        jobs.filter((job) => job.status === "queued" || job.status === "running").map((job) => job.jobId)
+      );
+      await storageCleanup.cleanupExpiredFiles({ protectedJobIds });
+      await localQueue.cleanupExpiredJobs();
+    }
+  });
+  await maintenance.start();
   return Object.freeze({
     role: "local" as const,
     authority: "memory" as const,
@@ -56,7 +71,7 @@ async function createLocalWebRuntime(): Promise<WebApiRuntime> {
       }
     }),
     async readiness() {},
-    async close() {}
+    close: maintenance.close
   });
 }
 

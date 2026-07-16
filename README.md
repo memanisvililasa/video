@@ -4,14 +4,9 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 ## Текущий этап
 
-Выполнен frontend-этап пересборки:
+Stage 5 repository work, Stage 6.1 documentation checkpoint и Stage 7 personal-use local implementation завершены. Production deployment не выполнялся, а Stage 6.2 намеренно отложен. Deterministic real-media smoke не обращается во внешний Internet; финальная проверка на публичной direct-ссылке выполняется владельцем только для контента, который он вправе скачать.
 
-- удалены demo/placeholder endpoints и demo UI;
-- подготовлена новая структура папок для backend, extractors, FFmpeg, storage и jobs;
-- добавлены skeleton/stub-модули без реальной бизнес-логики.
-- добавлена frontend-форма проверки ссылки, состояния анализа, карточка результата и выбор формата.
-
-Реальные API endpoints, функции скачивания, extractor-ы, FFmpeg-обработка, временные файлы и полноценный download flow будут добавлены на следующих этапах.
+Локальный pipeline поддерживает публичные прямые ссылки на `.mp4`, `.webm` и `.mov`: анализ, постановку job, загрузку, ffprobe, обработку FFmpeg, публикацию, выдачу файла и отмену. Extractor-ы страниц YouTube, TikTok, Instagram, Facebook, X/Twitter, Reddit и Vimeo пока не реализованы. VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, private accounts или ограничения платформ.
 
 ## Production-архитектура
 
@@ -27,17 +22,28 @@ PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media sto
 
 ## Локальная разработка
 
+Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, а также FFmpeg/ffprobe с encoders `libx264` и `aac`. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
+
 ```bash
-npm install
-npm run dev
+corepack npm install
+corepack npm run local
 ```
+
+`npm run local` выполняет fail-fast проверку toolchain, media binaries/codecs и writable `storage/tmp`, затем запускает Next.js только на `http://127.0.0.1:3000`. Проверку без запуска можно выполнить через `corepack npm run local:check`.
+
+`npm run dev` также привязан к `127.0.0.1`, но пропускает media preflight и предназначен для разработки отдельных UI-компонентов.
+
+Local jobs хранятся в памяти процесса: после restart незавершённая задача не восстанавливается. Refresh страницы в пределах живого процесса восстанавливает текущий job по безопасному session record без сохранения source URL. Expired media очищаются при старте local runtime и последующими bounded periodic sweeps; active jobs защищены от cleanup.
+
+Если preflight сообщает об отсутствии FFmpeg/ffprobe или `libx264`/`aac`, установите полную сборку FFmpeg для macOS и повторите `local:check`. Если toolchain не совпадает, запускайте npm через Corepack, чтобы использовалась версия из `packageManager`. Не публикуйте local listener в LAN и не меняйте hostname на `0.0.0.0` без отдельной private-access boundary.
 
 Проверки:
 
 ```bash
-npm run lint
-npm run typecheck
-npm run build
+corepack npm test
+corepack npm run test:local:smoke
+corepack npm run typecheck
+corepack npm run build
 ```
 
 ## Immutable production release (5.9.8B1)

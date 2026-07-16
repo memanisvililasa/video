@@ -13,6 +13,7 @@ import {
 } from "@/lib/client/media-preset-options";
 import {
   INITIAL_MEDIA_DOWNLOAD_UI_STATE,
+  MEDIA_JOB_SESSION_STORAGE_KEY,
   canCancelJob,
   canDownloadFile,
   canSubmitJob,
@@ -22,6 +23,8 @@ import {
   isTerminalState,
   mapApiSnapshotToUiState,
   mediaDownloadUiReducer,
+  restoreMediaJobSession,
+  serializeMediaJobSession,
   type MediaDownloadUiEvent,
   type MediaDownloadUiState,
   type MediaSelectionData
@@ -607,6 +610,52 @@ describe("derived selectors", () => {
     for (const state of states) expect(getSafeStatusMessage(state).length).toBeGreaterThan(0);
     expect(isTerminalState(ready())).toBe(true);
     expect(isTerminalState(running())).toBe(false);
+  });
+});
+
+describe("personal-use job session", () => {
+  const now = Date.UTC(2026, 0, 1, 0, 30);
+
+  it("persists only bounded non-secret job and selection data", () => {
+    const raw = serializeMediaJobSession(running(), now);
+    expect(raw).not.toBeNull();
+    expect(raw).not.toMatch(/https?:\/\/|sourceUrl|rightsConfirmed":true|Authorization|cookie/i);
+    expect(JSON.parse(raw as string)).toMatchObject({
+      version: 1,
+      jobId: JOB_ID,
+      processingPreset: "original",
+      selection: { selectedFormatId: "direct-source", rightsConfirmed: false }
+    });
+  });
+
+  it("restores a valid session as a poll-only reconnect state", () => {
+    const raw = serializeMediaJobSession(running(), now);
+    const restored = restoreMediaJobSession(raw, now + 1_000);
+    expect(restored).toMatchObject({
+      status: "network-error",
+      requestGeneration: 0,
+      jobId: JOB_ID,
+      operation: "poll",
+      selection: { rightsConfirmed: false }
+    });
+    expect(mediaDownloadUiReducer(INITIAL_MEDIA_DOWNLOAD_UI_STATE, {
+      type: "RESTORE_SESSION",
+      raw,
+      nowMs: now + 1_000
+    })).toEqual(restored);
+  });
+
+  it("rejects expired, malformed, and URL-bearing session payloads", () => {
+    const expired = serializeMediaJobSession(ready(), now);
+    expect(restoreMediaJobSession(expired, Date.parse(EXPIRES_AT) + 1)).toBeNull();
+    expect(restoreMediaJobSession("{broken", now)).toBeNull();
+    const hostile = JSON.parse(serializeMediaJobSession(running(), now) as string);
+    hostile.selection.media.originalUrl = "https://private.example/source.mp4?token=secret";
+    expect(restoreMediaJobSession(JSON.stringify(hostile), now + 1)).toBeNull();
+  });
+
+  it("uses the stable versioned storage key", () => {
+    expect(MEDIA_JOB_SESSION_STORAGE_KEY).toBe("videosave.personal-job.v1");
   });
 });
 

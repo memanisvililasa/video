@@ -1,10 +1,10 @@
 import { Icon } from "@/components/icons";
 
 const platforms = [
-  ["Публичные страницы", "Видео, доступные без входа и приватных разрешений."],
-  ["Прямые HTTP(S)-источники", "Ссылки, которые можно проверить без cookies и paywall."],
-  ["Официальные downloads", "Файлы, которые платформа или автор разрешают сохранить."],
-  ["Лицензированный контент", "Материалы с явным разрешением автора или подходящей лицензией."]
+  ["MP4", "Прямые публичные HTTP(S)-ссылки на файлы `.mp4`."],
+  ["WebM", "Прямые публичные HTTP(S)-ссылки на файлы `.webm`."],
+  ["QuickTime MOV", "Прямые публичные HTTP(S)-ссылки на файлы `.mov`."],
+  ["Страницы платформ", "YouTube, TikTok, Instagram и другие page URL пока не поддерживаются."]
 ];
 
 export function PlatformsSection() {
@@ -12,8 +12,8 @@ export function PlatformsSection() {
     <section className="mx-auto max-w-7xl px-5 py-16 sm:px-8 sm:py-20">
       <div className="max-w-2xl">
         <p className="text-xs font-bold uppercase tracking-[.14em] text-brand">Платформы</p>
-        <h2 className="mt-3 text-3xl font-extrabold tracking-[-.05em] text-ink sm:text-4xl">Что будет поддерживаться</h2>
-        <p className="mt-4 text-sm leading-6 text-slate-600">Поддержка конкретных источников появится после подключения extractor API. Этап 2 фиксирует только frontend-представление.</p>
+        <h2 className="mt-3 text-3xl font-extrabold tracking-[-.05em] text-ink sm:text-4xl">Поддерживаемые источники</h2>
+        <p className="mt-4 text-sm leading-6 text-slate-600">VideoSave принимает только прямые ссылки на публичные видеофайлы. Ссылка должна быть доступна без входа, cookies, paywall и обхода ограничений.</p>
       </div>
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {platforms.map(([title, text]) => (
