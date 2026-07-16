@@ -73,6 +73,7 @@ export type DeferredResponse = Readonly<{
   step: FetchStep;
   resolve: (response: Response) => void;
   reject: (error: Error) => void;
+  cleanup: () => void;
   getSignal: () => AbortSignal | null;
 }>;
 
@@ -176,25 +177,54 @@ export function jobSnapshot(
 }
 
 export function deferredResponse({ rejectOnAbort = false }: { rejectOnAbort?: boolean } = {}): DeferredResponse {
-  let resolvePromise!: (response: Response) => void;
-  let rejectPromise!: (error: Error) => void;
+  let resolvePromise: (response: Response) => void = () => undefined;
+  let rejectPromise: (error: Error) => void = () => undefined;
   let signal: AbortSignal | null = null;
+  let abortListener: (() => void) | null = null;
+  let started = false;
+  let settled = false;
+  const promise = new Promise<Response>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  // Cleanup may reject before a mocked fetch consumes the one-shot promise.
+  void promise.catch(() => undefined);
+
+  const removeAbortListener = () => {
+    if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+    abortListener = null;
+  };
+  const resolveOnce = (response: Response) => {
+    if (settled) return;
+    settled = true;
+    removeAbortListener();
+    resolvePromise(response);
+  };
+  const rejectOnce = (error: Error) => {
+    if (settled) return;
+    settled = true;
+    removeAbortListener();
+    rejectPromise(error);
+  };
   const step: FetchStep = (request) => {
+    if (started) throw new TypeError("Deferred browser response step is one-shot.");
+    started = true;
     signal = request.signal;
-    return new Promise<Response>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-      if (rejectOnAbort) {
-        request.signal?.addEventListener("abort", () => {
-          reject(new DOMException("Aborted", "AbortError"));
-        }, { once: true });
+    if (rejectOnAbort && !settled && request.signal) {
+      abortListener = () => rejectOnce(new DOMException("Aborted", "AbortError"));
+      if (request.signal.aborted) {
+        abortListener();
+      } else {
+        request.signal.addEventListener("abort", abortListener, { once: true });
       }
-    });
+    }
+    return promise;
   };
   return Object.freeze({
     step,
-    resolve: (response) => resolvePromise(response),
-    reject: (error) => rejectPromise(error),
+    resolve: resolveOnce,
+    reject: rejectOnce,
+    cleanup: () => rejectOnce(new DOMException("Deferred browser response cleaned up.", "AbortError")),
     getSignal: () => signal
   });
 }
