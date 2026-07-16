@@ -346,15 +346,18 @@ export function validateInstalledStructuredLogs(text, options) {
 }
 
 function captureProcessOutput(child) {
-  let value = "";
-  const append = (chunk) => { value = `${value}${Buffer.from(chunk).toString("utf8")}`.slice(-128 * 1024); };
-  child.stdout?.on("data", append);
-  child.stderr?.on("data", append);
+  let stdoutValue = "";
+  let stderrValue = "";
+  const appendStdout = (chunk) => { stdoutValue = `${stdoutValue}${Buffer.from(chunk).toString("utf8")}`.slice(-128 * 1024); };
+  const appendStderr = (chunk) => { stderrValue = `${stderrValue}${Buffer.from(chunk).toString("utf8")}`.slice(-128 * 1024); };
+  child.stdout?.on("data", appendStdout);
+  child.stderr?.on("data", appendStderr);
   return Object.freeze({
-    text: () => value,
+    stdoutText: () => stdoutValue,
+    stderrText: () => stderrValue,
     close() {
-      child.stdout?.off("data", append);
-      child.stderr?.off("data", append);
+      child.stdout?.off("data", appendStdout);
+      child.stderr?.off("data", appendStderr);
     }
   });
 }
@@ -666,6 +669,216 @@ export async function stopInstalledProcess(child, label, timeoutMs = 15_000) {
   });
 }
 
+function isExpectedSigtermExit(exitCode, signalCode) {
+  return (
+    (signalCode === null && (exitCode === 0 || exitCode === 128 + 15)) ||
+    (exitCode === null && signalCode === "SIGTERM")
+  );
+}
+
+function assertInstalledStderrSafe(text) {
+  if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > 128 * 1024) {
+    throw new Error("Installed process stderr capture is invalid.");
+  }
+  if (/(?:fatal|uncaught|unhandled|EADDRINUSE|startup failed|runtime failed)/i.test(text)) {
+    throw new Error("Installed process stderr contains a fatal runtime error.");
+  }
+  for (const line of text.split("\n")) {
+    const candidate = line.trim();
+    if (!candidate.startsWith("{")) continue;
+    let record;
+    try { record = JSON.parse(candidate); } catch { continue; }
+    if (record?.event === "process.stopping" || record?.event === "process.stopped") {
+      throw new Error("Installed process lifecycle evidence must come from stdout.");
+    }
+  }
+}
+
+export function verifyInstalledProcessShutdown(options) {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60_000) {
+    return Promise.reject(new TypeError("Installed process shutdown timeout is invalid."));
+  }
+  const parserOptions = {
+    expectedRole: options.expectedRole,
+    expectedReleaseCommit: options.expectedReleaseCommit,
+    expectedReleaseId: options.expectedReleaseId,
+    startedAtMs: options.startedAtMs,
+    now: options.now
+  };
+  const ready = parseInstalledProcessLogLine(JSON.stringify(options.readyRecord), {
+    ...parserOptions,
+    expectedEvent: "process.ready"
+  });
+  if (!ready) return Promise.reject(new Error("Installed process shutdown lacks canonical readiness evidence."));
+  if (options.child.exitCode !== null || options.child.signalCode !== null) {
+    return Promise.reject(new Error("Installed process exited before verifier SIGTERM."));
+  }
+  if (typeof options.verifyCleanup !== "function" || typeof options.stderrText !== "function") {
+    return Promise.reject(new TypeError("Installed process shutdown verification is incomplete."));
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let pending = Buffer.alloc(0);
+    let signalSent = false;
+    let exitSeen = false;
+    let stdoutEnded = false;
+    let stopping = null;
+    let stopped = null;
+    let exitCode = null;
+    let signalCode = null;
+    let cleanupStarted = false;
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+
+    const removeHandlers = () => {
+      clearTimeout(timer);
+      options.stdout.off("data", onData);
+      options.stdout.off("end", onEnd);
+      options.stdout.off("error", onStreamError);
+      options.child.off("exit", onExit);
+    };
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      removeHandlers();
+      if (error) reject(error);
+      else resolve(result);
+    };
+    const fail = (message) => finish(new Error(message));
+    const maybeFinish = () => {
+      if (settled || cleanupStarted || !exitSeen || !stdoutEnded) return;
+      if (!stopping || !stopped) {
+        fail("Installed process shutdown lacks canonical stopping evidence.");
+        return;
+      }
+      cleanupStarted = true;
+      removeHandlers();
+      Promise.resolve()
+        .then(() => assertInstalledStderrSafe(options.stderrText()))
+        .then(() => options.verifyCleanup())
+        .then(
+          () => {
+            if (settled) return;
+            settled = true;
+            resolve(Object.freeze({
+              ready,
+              stopping,
+              stopped,
+              exitCode,
+              signalCode,
+              signalSent,
+              timedOut: false,
+              usedSigkill: false
+            }));
+          },
+          () => {
+            if (settled) return;
+            settled = true;
+            reject(new Error("Installed process cleanup verification failed."));
+          }
+        );
+    };
+    const inspectLine = (bytes) => {
+      if (bytes.length > INSTALLED_WORKER_MAX_LINE_BYTES) {
+        fail("Installed process lifecycle output is invalid.");
+        return;
+      }
+      let line;
+      try { line = decoder.decode(bytes); } catch {
+        fail("Installed process lifecycle output is invalid.");
+        return;
+      }
+      const candidate = line.trim();
+      if (!candidate.startsWith("{")) return;
+      let parsed;
+      try { parsed = JSON.parse(candidate); } catch {
+        fail("Installed process lifecycle output is invalid.");
+        return;
+      }
+      if (!["process.ready", "process.stopping", "process.stopped"].includes(parsed?.event)) return;
+      const record = parseInstalledProcessLogLine(candidate, parserOptions);
+      if (!record || record.processInstanceId !== ready.processInstanceId) {
+        fail("Installed process lifecycle identity is invalid.");
+        return;
+      }
+      if (!signalSent || record.event === "process.ready") {
+        fail("Installed process lifecycle order is invalid.");
+        return;
+      }
+      if (record.event === "process.stopping") {
+        if (stopping || stopped || Date.parse(record.timestamp) < Date.parse(ready.timestamp)) {
+          fail("Installed process stopping event is invalid or duplicated.");
+          return;
+        }
+        stopping = record;
+        return;
+      }
+      if (!stopping || stopped || Date.parse(record.timestamp) < Date.parse(stopping.timestamp)) {
+        fail("Installed process stopped event is invalid or duplicated.");
+        return;
+      }
+      stopped = record;
+    };
+    const onData = (value) => {
+      if (settled) return;
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      let offset = 0;
+      while (!settled && offset < chunk.length) {
+        const newline = chunk.indexOf(0x0a, offset);
+        const end = newline === -1 ? chunk.length : newline;
+        const segment = chunk.subarray(offset, end);
+        if (pending.length + segment.length > INSTALLED_WORKER_MAX_LINE_BYTES) {
+          fail("Installed process lifecycle output is invalid.");
+          return;
+        }
+        if (segment.length > 0) pending = Buffer.concat([pending, segment], pending.length + segment.length);
+        if (newline === -1) return;
+        const line = pending;
+        pending = Buffer.alloc(0);
+        inspectLine(line);
+        offset = newline + 1;
+      }
+    };
+    const onEnd = () => {
+      if (settled) return;
+      if (pending.length > 0) {
+        const first = pending.subarray(0, 1).toString("utf8");
+        if (first === "{") {
+          fail("Installed process lifecycle output ended with an incomplete record.");
+          return;
+        }
+        pending = Buffer.alloc(0);
+      }
+      stdoutEnded = true;
+      maybeFinish();
+    };
+    const onStreamError = () => fail("Installed process lifecycle output is invalid.");
+    const onExit = (code, signal) => {
+      if (settled) return;
+      exitSeen = true;
+      exitCode = code;
+      signalCode = signal;
+      if (!isExpectedSigtermExit(exitCode, signalCode)) {
+        fail("Installed process exited with an unexpected status after SIGTERM.");
+        return;
+      }
+      maybeFinish();
+    };
+    const timer = setTimeout(() => {
+      if (!exitSeen) options.child.kill("SIGKILL");
+      fail("Installed process shutdown timed out.");
+    }, timeoutMs);
+    timer.unref?.();
+    options.stdout.on("data", onData);
+    options.stdout.once("end", onEnd);
+    options.stdout.once("error", onStreamError);
+    options.child.once("exit", onExit);
+    signalSent = true;
+    if (!options.child.kill("SIGTERM")) fail("Installed process rejected verifier SIGTERM.");
+  });
+}
+
 async function main() {
   if (process.platform !== "linux") throw new Error("Installed release process validation requires Linux.");
   if (process.version.replace(/^v/, "") !== APPROVED_NODE_VERSION) throw new Error("Node version is not approved.");
@@ -794,7 +1007,7 @@ async function main() {
     });
     const webOutput = captureProcessOutput(web);
     try {
-      await waitForInstalledProcessReady({
+      const webReady = await waitForInstalledProcessReady({
         child: web,
         stdout: web.stdout,
         expectedRole: "web",
@@ -829,19 +1042,28 @@ async function main() {
       await postgresTlsBridge.close();
       postgresTlsBridge = undefined;
       await verifyDependencyOutage({ role: "web", port });
-      await stopInstalledProcess(web, "Installed web");
-      if (web.exitCode !== 0 || web.signalCode !== null) throw new Error("Installed web did not stop gracefully.");
-      validateInstalledStructuredLogs(webOutput.text(), {
+      await verifyInstalledProcessShutdown({
+        child: web,
+        stdout: web.stdout,
+        readyRecord: webReady,
+        expectedRole: "web",
+        expectedReleaseCommit: manifest.build.gitCommit,
+        expectedReleaseId: installed.releaseId,
+        startedAtMs: webStartedAt,
+        timeoutMs: 15_000,
+        stderrText: webOutput.stderrText,
+        verifyCleanup: () => assertLoopbackClosed(port, "Web")
+      });
+      validateInstalledStructuredLogs(webOutput.stdoutText(), {
         expectedRole: "web",
         expectedReleaseCommit: manifest.build.gitCommit,
         expectedReleaseId: installed.releaseId,
         startedAtMs: webStartedAt,
         requiredEvents: ["process.starting", "process.ready", "process.stopping", "process.stopped"]
       });
-      await assertLoopbackClosed(port, "Web");
     } finally {
       webOutput.close();
-      if (web.exitCode === null) web.kill("SIGKILL");
+      if (web.exitCode === null && web.signalCode === null) web.kill("SIGKILL");
     }
 
     postgresTlsBridge = await createPostgresTlsBridge(databaseUrl, deploymentRoot);
@@ -854,7 +1076,7 @@ async function main() {
     });
     const workerOutput = captureProcessOutput(worker);
     try {
-      await waitForInstalledWorkerReady({
+      const workerReady = await waitForInstalledWorkerReady({
         child: worker,
         stdout: worker.stdout,
         expectedReleaseCommit: manifest.build.gitCommit,
@@ -871,21 +1093,28 @@ async function main() {
       await postgresTlsBridge.close();
       postgresTlsBridge = undefined;
       await verifyDependencyOutage({ role: "worker", port: workerObservabilityPort });
-      await stopInstalledProcess(worker, "Installed worker", 15_000);
-      if (worker.exitCode !== 0 || worker.signalCode !== null) {
-        throw new Error("Installed worker did not complete graceful SIGTERM shutdown.");
-      }
-      validateInstalledStructuredLogs(workerOutput.text(), {
+      await verifyInstalledProcessShutdown({
+        child: worker,
+        stdout: worker.stdout,
+        readyRecord: workerReady,
+        expectedRole: "worker",
+        expectedReleaseCommit: manifest.build.gitCommit,
+        expectedReleaseId: installed.releaseId,
+        startedAtMs: workerStartedAt,
+        timeoutMs: 15_000,
+        stderrText: workerOutput.stderrText,
+        verifyCleanup: () => assertLoopbackClosed(workerObservabilityPort, "Worker observability")
+      });
+      validateInstalledStructuredLogs(workerOutput.stdoutText(), {
         expectedRole: "worker",
         expectedReleaseCommit: manifest.build.gitCommit,
         expectedReleaseId: installed.releaseId,
         startedAtMs: workerStartedAt,
         requiredEvents: ["process.starting", "process.ready", "process.stopping", "process.stopped"]
       });
-      await assertLoopbackClosed(workerObservabilityPort, "Worker observability");
     } finally {
       workerOutput.close();
-      if (worker.exitCode === null) worker.kill("SIGKILL");
+      if (worker.exitCode === null && worker.signalCode === null) worker.kill("SIGKILL");
     }
     console.info("Linux installed release observability validation passed.");
   } finally {

@@ -20,6 +20,7 @@ const {
   validateInstalledMetricsText,
   validateInstalledReleaseReadiness,
   validateInstalledStructuredLogs,
+  verifyInstalledProcessShutdown,
   waitForInstalledWorkerReady
 } = installedRelease;
 
@@ -369,6 +370,236 @@ describe("installed worker SIGTERM lifecycle", () => {
       expect(child.signalCode).toBeNull();
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
+    }
+  });
+});
+
+describe("strict installed process shutdown verification", () => {
+  function lifecycleRecord(event: "process.ready" | "process.stopping" | "process.stopped", overrides: Record<string, unknown> = {}) {
+    return readyRecord({ event, ...overrides });
+  }
+
+  function shutdownHarness(overrides: Record<string, unknown> = {}) {
+    const child = new FakeChild();
+    const stdout = new PassThrough();
+    const verifyCleanup = vi.fn(async () => undefined);
+    const stderrText = vi.fn(() => "");
+    const promise = verifyInstalledProcessShutdown({
+      child,
+      stdout,
+      readyRecord: lifecycleRecord("process.ready"),
+      expectedRole: "worker",
+      expectedReleaseCommit: RELEASE_COMMIT,
+      expectedReleaseId: RELEASE_ID,
+      startedAtMs: STARTED_AT,
+      now: () => NOW,
+      timeoutMs: 1_000,
+      verifyCleanup,
+      stderrText,
+      ...overrides
+    });
+    return { child, stdout, verifyCleanup, stderrText, promise };
+  }
+
+  function exit(harness: ReturnType<typeof shutdownHarness>, code: number | null, signal: NodeJS.Signals | null) {
+    harness.child.exitCode = code;
+    harness.child.signalCode = signal;
+    harness.child.emit("exit", code, signal);
+    harness.stdout.end();
+  }
+
+  it("accepts split canonical stopping evidence and a signal-based SIGTERM exit", async () => {
+    const harness = shutdownHarness();
+    const lines = `${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`;
+    harness.stdout.write(lines.slice(0, 13));
+    harness.stdout.write(lines.slice(13, 79));
+    harness.stdout.write(lines.slice(79));
+    exit(harness, null, "SIGTERM");
+    await expect(harness.promise).resolves.toMatchObject({
+      exitCode: null,
+      signalCode: "SIGTERM",
+      signalSent: true,
+      timedOut: false,
+      usedSigkill: false
+    });
+    expect(harness.child.kill).toHaveBeenCalledTimes(1);
+    expect(harness.child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(harness.verifyCleanup).toHaveBeenCalledTimes(1);
+    expect(harness.stdout.listenerCount("data")).toBe(0);
+    expect(harness.stdout.listenerCount("end")).toBe(0);
+    expect(harness.child.listenerCount("exit")).toBe(0);
+  });
+
+  it.each([0, 143])("accepts canonical lifecycle with expected exit code %s", async (code) => {
+    const harness = shutdownHarness();
+    harness.stdout.end([
+      JSON.stringify({ status: "unrelated" }),
+      JSON.stringify(lifecycleRecord("process.stopping")),
+      JSON.stringify(lifecycleRecord("process.stopped"))
+    ].join("\n") + "\n");
+    harness.child.exitCode = code;
+    harness.child.emit("exit", code, null);
+    await expect(harness.promise).resolves.toMatchObject({ exitCode: code, signalCode: null });
+  });
+
+  it("recognizes a real child that logs lifecycle then re-raises SIGTERM", async () => {
+    const child = spawn(process.execPath, ["-e", [
+      "process.stdout.write(process.env.READY_RECORD + '\\n');",
+      "process.once('SIGTERM', () => process.stdout.write(process.env.STOPPING_RECORD + '\\n', () => process.stdout.write(process.env.STOPPED_RECORD + '\\n', () => { process.removeAllListeners('SIGTERM'); process.kill(process.pid, 'SIGTERM'); })));",
+      "setInterval(() => {}, 1000);"
+    ].join("")], {
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "test",
+        READY_RECORD: JSON.stringify(lifecycleRecord("process.ready")),
+        STOPPING_RECORD: JSON.stringify(lifecycleRecord("process.stopping")),
+        STOPPED_RECORD: JSON.stringify(lifecycleRecord("process.stopped"))
+      },
+      stdio: ["ignore", "pipe", "ignore"] as const
+    });
+    try {
+      const ready = await waitForInstalledWorkerReady({
+        child,
+        stdout: child.stdout,
+        ...parserOptions(),
+        timeoutMs: 5_000
+      });
+      await expect(verifyInstalledProcessShutdown({
+        child,
+        stdout: child.stdout,
+        readyRecord: ready,
+        expectedRole: "worker",
+        expectedReleaseCommit: RELEASE_COMMIT,
+        expectedReleaseId: RELEASE_ID,
+        startedAtMs: STARTED_AT,
+        now: () => NOW,
+        timeoutMs: 5_000,
+        stderrText: () => "",
+        verifyCleanup: async () => undefined
+      })).resolves.toMatchObject({ exitCode: null, signalCode: "SIGTERM" });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  });
+
+  it("rejects a process that exited before verifier SIGTERM", async () => {
+    const child = new FakeChild();
+    child.exitCode = 1;
+    await expect(verifyInstalledProcessShutdown({
+      child,
+      stdout: new PassThrough(),
+      readyRecord: lifecycleRecord("process.ready"),
+      ...parserOptions(),
+      expectedRole: "worker",
+      stderrText: () => "",
+      verifyCleanup: async () => undefined
+    })).rejects.toThrow("before verifier SIGTERM");
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["wrong role", { processRole: "web" }],
+    ["wrong commit", { releaseCommit: "c".repeat(40) }],
+    ["commit prefix", { releaseCommit: RELEASE_COMMIT.slice(0, 12) }],
+    ["wrong release id", { releaseId: "videosave-1.0.0-cccccccccccc" }],
+    ["stale event", { timestamp: new Date(STARTED_AT - 1).toISOString() }],
+    ["wrong instance", { processInstanceId: "c".repeat(32) }]
+  ])("rejects %s lifecycle evidence", async (_label, mutation) => {
+    const harness = shutdownHarness();
+    harness.stdout.write(`${JSON.stringify(lifecycleRecord("process.stopping", mutation))}\n`);
+    exit(harness, 143, null);
+    await expect(harness.promise).rejects.toThrow(/identity|stopping evidence/);
+  });
+
+  it("rejects missing ready, stopping, or stopped evidence", async () => {
+    await expect(shutdownHarness({ readyRecord: lifecycleRecord("process.ready", { outcome: "failure" }) }).promise)
+      .rejects.toThrow("lacks canonical readiness");
+
+    const missingStopping = shutdownHarness();
+    missingStopping.stdout.end(`${JSON.stringify({ status: "unrelated" })}\n`);
+    missingStopping.child.exitCode = 143;
+    missingStopping.child.emit("exit", 143, null);
+    await expect(missingStopping.promise).rejects.toThrow("lacks canonical stopping evidence");
+
+    const missingStopped = shutdownHarness();
+    missingStopped.stdout.end(`${JSON.stringify(lifecycleRecord("process.stopping"))}\n`);
+    missingStopped.child.exitCode = 143;
+    missingStopped.child.emit("exit", 143, null);
+    await expect(missingStopped.promise).rejects.toThrow("lacks canonical stopping evidence");
+  });
+
+  it.each([
+    ["unexpected signal", null, "SIGINT"],
+    ["SIGKILL", null, "SIGKILL"],
+    ["crash exit", 1, null]
+  ] as const)("rejects %s", async (_label, code, signal) => {
+    const harness = shutdownHarness();
+    harness.stdout.end(`${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`);
+    harness.child.exitCode = code;
+    harness.child.signalCode = signal;
+    harness.child.emit("exit", code, signal);
+    await expect(harness.promise).rejects.toThrow("unexpected status");
+  });
+
+  it("rejects lifecycle evidence from stderr and fatal stderr", async () => {
+    const stderrOnly = shutdownHarness({
+      stderrText: () => `${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`
+    });
+    stderrOnly.stdout.end();
+    stderrOnly.child.exitCode = 143;
+    stderrOnly.child.emit("exit", 143, null);
+    await expect(stderrOnly.promise).rejects.toThrow("lacks canonical stopping evidence");
+
+    const fatal = shutdownHarness({ stderrText: () => "fatal runtime failure\n" });
+    fatal.stdout.end(`${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`);
+    fatal.child.exitCode = 143;
+    fatal.child.emit("exit", 143, null);
+    await expect(fatal.promise).rejects.toThrow("cleanup verification failed");
+  });
+
+  it("rejects malformed, nested, duplicate, and oversized lifecycle output", async () => {
+    for (const line of [
+      "{malformed}\n",
+      `${JSON.stringify({ metadata: lifecycleRecord("process.stopping") })}\n`,
+      `${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopping"))}\n`,
+      `${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`,
+      `${"a".repeat(INSTALLED_WORKER_MAX_LINE_BYTES + 1)}`
+    ]) {
+      const harness = shutdownHarness();
+      harness.stdout.write(line);
+      if (!line.endsWith("\n")) harness.stdout.end();
+      if (harness.child.exitCode === null) {
+        harness.child.exitCode = 143;
+        harness.child.emit("exit", 143, null);
+      }
+      if (!harness.stdout.destroyed) harness.stdout.end();
+      await expect(harness.promise).rejects.toThrow(/output|stopping|stopped|evidence/);
+    }
+  });
+
+  it("rejects an occupied listener or active child through cleanup verification", async () => {
+    for (const message of ["listener occupied", "child active"]) {
+      const harness = shutdownHarness({ verifyCleanup: async () => { throw new Error(message); } });
+      harness.stdout.end(`${JSON.stringify(lifecycleRecord("process.stopping"))}\n${JSON.stringify(lifecycleRecord("process.stopped"))}\n`);
+      harness.child.exitCode = 143;
+      harness.child.emit("exit", 143, null);
+      await expect(harness.promise).rejects.toThrow("cleanup verification failed");
+    }
+  });
+
+  it("times out boundedly, sends one SIGTERM, and uses SIGKILL only for forced cleanup", async () => {
+    vi.useFakeTimers();
+    try {
+      const harness = shutdownHarness({ timeoutMs: 100 });
+      const rejected = expect(harness.promise).rejects.toThrow("shutdown timed out");
+      await vi.advanceTimersByTimeAsync(100);
+      await rejected;
+      expect(harness.child.kill.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+      expect(harness.stdout.listenerCount("data")).toBe(0);
+      expect(harness.child.listenerCount("exit")).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
