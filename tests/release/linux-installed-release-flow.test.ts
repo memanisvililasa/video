@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { connect } from "node:net";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import { OBSERVABILITY_SCHEMA_VERSION } from "@/lib/observability/contract";
@@ -330,6 +331,24 @@ describe("installed worker readiness stream", () => {
 });
 
 describe("installed worker SIGTERM lifecycle", () => {
+  async function expectFixturePortClosed(port: number): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect({ host: "127.0.0.1", port });
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error("Fixture listener cleanup timed out."));
+      }, 1_000);
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        socket.destroy();
+        if (error) reject(error);
+        else resolve();
+      };
+      socket.once("connect", () => finish(new Error("Fixture listener remained open.")));
+      socket.once("error", () => finish());
+    });
+  }
+
   it("signals once and clears its shutdown timer after graceful exit", async () => {
     const child = new FakeChild();
     child.kill.mockImplementation((signal?: NodeJS.Signals | number) => {
@@ -350,14 +369,32 @@ describe("installed worker SIGTERM lifecycle", () => {
   it("recognizes a real child readiness record before graceful SIGTERM shutdown", async () => {
     const startedAtMs = Date.now() - 100;
     const record = readyRecord({ timestamp: new Date().toISOString() });
-    const child = spawn(process.execPath, ["-e", [
-      "process.stdout.write(process.env.READY_RECORD + '\\n');",
-      "process.on('SIGTERM', () => process.exit(0));",
-      "setInterval(() => {}, 1000);"
-    ].join("")], {
-      env: { PATH: process.env.PATH, NODE_ENV: "test", READY_RECORD: JSON.stringify(record) },
+    const stoppingRecord = readyRecord({ event: "process.stopping", timestamp: new Date().toISOString() });
+    const stoppedRecord = readyRecord({ event: "process.stopped", timestamp: new Date().toISOString() });
+    const fixtureSource = [
+      "const {createServer}=require('node:net');",
+      "const server=createServer(socket=>socket.destroy());",
+      "let stopping=false;",
+      "const cleanup=callback=>server.listening?server.close(callback):callback();",
+      "const onSignal=()=>{if(stopping)return;stopping=true;process.stdout.write(process.env.STOPPING_RECORD+'\\n');cleanup(error=>{if(error){process.exit(1);return;}process.stdout.write(process.env.STOPPED_RECORD+'\\n',()=>process.exit(0));});};",
+      "process.on('SIGTERM',onSignal);",
+      "process.once('exit',()=>{if(server.listening)server.close();});",
+      "server.listen(0,'127.0.0.1',()=>{process.stdout.write(JSON.stringify({fixturePort:server.address().port})+'\\n');process.stdout.write(process.env.READY_RECORD+'\\n');});"
+    ].join("");
+    expect(fixtureSource.indexOf("process.on('SIGTERM'")).toBeLessThan(fixtureSource.indexOf("READY_RECORD"));
+    const child = spawn(process.execPath, ["-e", fixtureSource], {
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "test",
+        READY_RECORD: JSON.stringify(record),
+        STOPPING_RECORD: JSON.stringify(stoppingRecord),
+        STOPPED_RECORD: JSON.stringify(stoppedRecord)
+      },
       stdio: ["ignore", "pipe", "ignore"] as const
     });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output = `${output}${chunk.toString("utf8")}`.slice(-32_768); });
+    const stdoutEnded = new Promise<void>((resolve) => child.stdout.once("end", resolve));
     try {
       await expect(waitForInstalledWorkerReady({
         child,
@@ -365,9 +402,24 @@ describe("installed worker SIGTERM lifecycle", () => {
         ...parserOptions({ startedAtMs, now: Date.now }),
         timeoutMs: 5_000
       })).resolves.toMatchObject({ event: "process.ready" });
-      await stopInstalledProcess(child, "Installed worker", 5_000);
+      const shutdown = stopInstalledProcess(child, "Installed worker", 5_000);
+      child.kill("SIGTERM");
+      await shutdown;
+      await stdoutEnded;
       expect(child.exitCode).toBe(0);
       expect(child.signalCode).toBeNull();
+      const lifecycle = validateInstalledStructuredLogs(output, {
+        ...parserOptions({ startedAtMs, now: Date.now }),
+        expectedRole: "worker",
+        requiredEvents: ["process.ready", "process.stopping", "process.stopped"]
+      });
+      expect(lifecycle.filter((item: { event: string }) => item.event === "process.stopping")).toHaveLength(1);
+      expect(lifecycle.filter((item: { event: string }) => item.event === "process.stopped")).toHaveLength(1);
+      const fixturePort = output.split("\n").map((line) => {
+        try { return JSON.parse(line)?.fixturePort; } catch { return undefined; }
+      }).find((value) => Number.isSafeInteger(value));
+      if (typeof fixturePort !== "number") throw new Error("Fixture listener port was not reported.");
+      await expectFixturePortClosed(fixturePort);
     } finally {
       if (child.exitCode === null) child.kill("SIGKILL");
     }
@@ -444,8 +496,8 @@ describe("strict installed process shutdown verification", () => {
 
   it("recognizes a real child that logs lifecycle then re-raises SIGTERM", async () => {
     const child = spawn(process.execPath, ["-e", [
-      "process.stdout.write(process.env.READY_RECORD + '\\n');",
       "process.once('SIGTERM', () => process.stdout.write(process.env.STOPPING_RECORD + '\\n', () => process.stdout.write(process.env.STOPPED_RECORD + '\\n', () => { process.removeAllListeners('SIGTERM'); process.kill(process.pid, 'SIGTERM'); })));",
+      "process.stdout.write(process.env.READY_RECORD + '\\n');",
       "setInterval(() => {}, 1000);"
     ].join("")], {
       env: {
