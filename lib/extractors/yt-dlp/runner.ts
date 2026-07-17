@@ -25,7 +25,10 @@ import { validateOutboundHostname } from "@/lib/security/ssrf";
 import { API_ERROR_CODES } from "@/lib/types";
 
 type ProcessRunner = (options: BoundedProcessRunOptions) => Promise<BoundedProcessResult>;
-type GuardFactory = (options: { signal?: AbortSignal }) => Promise<MetadataEgressGuard>;
+type GuardFactory = (options: {
+  signal?: AbortSignal;
+  allowHostname?: (hostname: string) => boolean;
+}) => Promise<MetadataEgressGuard>;
 
 export type YtDlpMetadataRunnerOptions = Readonly<{
   binaryPath?: string;
@@ -46,11 +49,11 @@ function assertCanonicalPageUrl(url: URL): void {
 
 function isolatedEnvironment(scratch: string, pathValue: string | undefined, needsPath: boolean): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
-    HOME: path.join(scratch, "home"),
-    XDG_CACHE_HOME: path.join(scratch, "cache"),
-    XDG_CONFIG_HOME: path.join(scratch, "config"),
-    XDG_DATA_HOME: path.join(scratch, "data"),
-    TMPDIR: path.join(scratch, "tmp"),
+    HOME: path.join(/* turbopackIgnore: true */ scratch, "home"),
+    XDG_CACHE_HOME: path.join(/* turbopackIgnore: true */ scratch, "cache"),
+    XDG_CONFIG_HOME: path.join(/* turbopackIgnore: true */ scratch, "config"),
+    XDG_DATA_HOME: path.join(/* turbopackIgnore: true */ scratch, "data"),
+    TMPDIR: path.join(/* turbopackIgnore: true */ scratch, "tmp"),
     LANG: "C",
     LC_ALL: "C",
     NO_COLOR: "1",
@@ -107,20 +110,52 @@ function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: 
   ]);
 }
 
-function mapProcessError(error: unknown): AppError {
+const VIMEO_METADATA_HOST_SUFFIXES = Object.freeze(["vimeo.com", "vimeocdn.com"]);
+
+function isAllowedMetadataHostname(platform: PlatformPageId, hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  if (platform !== "vimeo") return false;
+  return VIMEO_METADATA_HOST_SUFFIXES.some((suffix) =>
+    normalized === suffix || normalized.endsWith(`.${suffix}`)
+  );
+}
+
+export function mapYtDlpProcessError(error: unknown): AppError {
   if (error instanceof BoundedProcessError) {
     if (error.reason === "timeout") return new AppError(API_ERROR_CODES.EXTRACTOR_TIMEOUT);
     if (error.reason === "aborted") return new AppError(API_ERROR_CODES.JOB_CANCELLED);
+    const stderr = error.stderr.toLowerCase();
+    if (/password(?:-protected| protected| required)|enter password/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.PRIVATE_CONTENT);
+    }
+    if (/private video|video is private|privacy settings/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.PRIVATE_CONTENT);
+    }
+    if (/login required|sign in|log in|authentication required|use --cookies/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
+    }
+    if (/\bdrm\b|digital rights management/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.DRM_PROTECTED);
+    }
+    if (/geo(?:graphically)? restricted|not available in your country|not available in your region/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.GEO_RESTRICTED);
+    }
+    if (/age[- ]restricted|confirm your age|age verification/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.AGE_RESTRICTED);
+    }
+    if (/video (?:has been removed|does not exist|is unavailable)|not found|http error 404/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.CONTENT_UNAVAILABLE);
+    }
     return new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
   }
   return error instanceof AppError ? error : new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
 }
 
 async function createScratch(root: string): Promise<string> {
-  const scratch = await mkdtemp(path.join(root, "videosave-ytdlp-"));
+  const scratch = await mkdtemp(path.join(/* turbopackIgnore: true */ root, "videosave-ytdlp-"));
   await chmod(scratch, 0o700);
   await Promise.all(["home", "cache", "config", "data", "tmp"].map((name) =>
-    mkdir(path.join(scratch, name), { recursive: true, mode: 0o700 })
+    mkdir(path.join(/* turbopackIgnore: true */ scratch, name), { recursive: true, mode: 0o700 })
   ));
   return scratch;
 }
@@ -130,7 +165,10 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
   const binaryPath = resolveYtDlpBinaryPath(options.binaryPath ?? process.env.YT_DLP_PATH, nodeEnv);
   const processRunner = options.processRunner ?? runBoundedProcess;
   const guardFactory = options.guardFactory ?? startMetadataEgressGuard;
-  const temporaryRoot = path.resolve(options.temporaryRoot ?? os.tmpdir());
+  const temporaryRoot = options.temporaryRoot ?? os.tmpdir();
+  if (!path.isAbsolute(temporaryRoot) || temporaryRoot.includes("\0")) {
+    throw new TypeError("yt-dlp temporary root must be an absolute path.");
+  }
   const pathValue = options.pathValue ?? process.env.PATH;
   let verifiedVersion: Promise<string> | undefined;
 
@@ -150,7 +188,10 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
       return parseYtDlpVersionOutput(result.stdout);
     } catch (error) {
       if (error instanceof TypeError) throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
-      throw mapProcessError(error);
+      if (error instanceof BoundedProcessError && error.reason === "timeout") {
+        throw new AppError(API_ERROR_CODES.EXTRACTOR_TIMEOUT);
+      }
+      throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
@@ -173,7 +214,10 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
       const scratch = await createScratch(temporaryRoot);
       let guard: MetadataEgressGuard | undefined;
       try {
-        guard = await guardFactory({ signal });
+        guard = await guardFactory({
+          signal,
+          allowHostname: (hostname) => isAllowedMetadataHostname(platform, hostname)
+        });
         const result = await processRunner({
           command: binaryPath,
           args: metadataArguments(platform, guard.proxyUrl, pageUrl),
@@ -187,7 +231,7 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
         });
         return parseYtDlpMetadataJson(result.stdout, platform);
       } catch (error) {
-        throw mapProcessError(error);
+        throw mapYtDlpProcessError(error);
       } finally {
         await guard?.close();
         await rm(scratch, { recursive: true, force: true });

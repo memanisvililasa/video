@@ -6,7 +6,7 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 Stage 5 repository work, Stage 6.1 documentation checkpoint и Stage 7 personal-use local implementation завершены. Production deployment не выполнялся, а Stage 6.2 намеренно отложен. Deterministic real-media smoke не обращается во внешний Internet; финальная проверка на публичной direct-ссылке выполняется владельцем только для контента, который он вправе скачать.
 
-Локальный pipeline поддерживает публичные прямые ссылки на `.mp4`, `.webm` и `.mov`: анализ, постановку job, загрузку, ffprobe, обработку FFmpeg, публикацию, выдачу файла и отмену. Extractor-ы страниц YouTube, TikTok, Instagram, Facebook, X/Twitter, Reddit и Vimeo пока не реализованы. VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, paywall, private accounts или ограничения платформ.
+Локальный pipeline поддерживает публичные прямые ссылки на `.mp4`, `.webm` и `.mov`, а также публичные одиночные страницы Vimeo вида `https://vimeo.com/<numeric-id>`, `https://www.vimeo.com/<numeric-id>` и `https://player.vimeo.com/video/<numeric-id>`. Vimeo extractor использует только progressive HTTPS-форматы с видео и аудио, повторно извлекает свежий internal source перед bounded download и никогда не возвращает media/CDN URL клиенту. Extractor-ы страниц YouTube, TikTok, Instagram, Facebook, X/Twitter и Reddit остаются отключёнными. VideoSave не поддерживает private, password-protected, paid, login-required, live, playlist/showcase/channel, DRM, geo-bypassed или age-bypassed Vimeo content и не использует cookies, credentials, browser profiles или proxy overrides.
 
 ## Production-архитектура
 
@@ -22,7 +22,7 @@ PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media sto
 
 ## Локальная разработка
 
-Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, FFmpeg/ffprobe с encoders `libx264` и `aac`, а также system binary yt-dlp `2026.07.04`. yt-dlp пока используется только подготовленным server-only extractor foundation: platform-page extractors остаются отключёнными до отдельных acceptance stages. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
+Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, FFmpeg/ffprobe с encoders `libx264` и `aac`, а также system binary yt-dlp `2026.07.04`. yt-dlp используется server-only Vimeo extractor и запускается только через repository-controlled metadata runner; global/user config, playlists, cookies, netrc, browser profiles, plugins, remote components и пользовательские arguments отключены. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
 
 ```bash
 corepack npm install

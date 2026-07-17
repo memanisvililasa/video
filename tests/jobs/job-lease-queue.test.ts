@@ -21,6 +21,31 @@ describe("durable media job payload", () => {
     expect(Object.isFrozen(payload)).toBe(true);
   });
 
+  it.each([
+    "https://vimeo.com/123456789",
+    "https://www.vimeo.com/123456789/",
+    "https://player.vimeo.com/video/123456789"
+  ])("stores only the canonical Vimeo page identity for %s", (sourceUrl) => {
+    expect(sanitizeMediaJobWorkItem({
+      sourceUrl,
+      formatId: "pf_0123456789abcdefghijklmnopqrstuvwxyzABCDE",
+      processingPreset: "original"
+    }).sourceUrl).toBe("https://vimeo.com/123456789");
+  });
+
+  it.each([
+    "http://vimeo.com/123456789",
+    "https://vimeo.com/123456789?token=secret",
+    "https://vimeo.com/showcase/123456789",
+    "https://player.vimeo.com/video/123456789#fragment"
+  ])("rejects an out-of-scope Vimeo durable identity: %s", (sourceUrl) => {
+    expect(() => sanitizeMediaJobWorkItem({
+      sourceUrl,
+      formatId: "best",
+      processingPreset: "original"
+    })).toThrow();
+  });
+
   it("drops every runtime-only or credential-bearing extra field", () => {
     const payload = sanitizeMediaJobWorkItem({
       sourceUrl: "https://example.com/video",

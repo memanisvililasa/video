@@ -13,7 +13,7 @@ const productFiles = [
 ];
 
 describe("personal-use product truth", () => {
-  it("describes the implemented direct-media runtime without stale frontend-stage claims", async () => {
+  it("describes direct media and bounded public Vimeo support without stale claims", async () => {
     const content = (await Promise.all(productFiles.map((relative) =>
       readFile(path.join(process.cwd(), relative), "utf8")
     ))).join("\n");
@@ -22,7 +22,12 @@ describe("personal-use product truth", () => {
     expect(content).toMatch(/\.webm/);
     expect(content).toMatch(/\.mov/);
     expect(content).toMatch(/не обходит DRM/);
-    expect(content).toMatch(/страниц(?:ы|ах) платформ/i);
+    expect(content).toMatch(/Vimeo/);
+    expect(content).toMatch(/публичн(?:ые|ой) одиночн/i);
+    expect(content).toMatch(/progressive HTTPS/i);
+    expect(content).toMatch(/другие страницы платформ|другие page URL/i);
+    expect(content).toMatch(/не поддерживаются|отклоняются/i);
+    expect(content).not.toMatch(/поддерживаются все.*Vimeo|любые.*Vimeo/i);
   });
 
   it("does not claim or configure Redis for the accepted local/single-host scope", async () => {

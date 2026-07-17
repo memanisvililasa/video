@@ -20,4 +20,27 @@ describe("media job request error model", () => {
       expect(message).not.toContain(forbidden);
     }
   });
+
+  it.each([
+    API_ERROR_CODES.UNSUPPORTED_PLATFORM,
+    API_ERROR_CODES.UNSUPPORTED_URL,
+    API_ERROR_CODES.CONTENT_UNAVAILABLE,
+    API_ERROR_CODES.LOGIN_REQUIRED,
+    API_ERROR_CODES.PRIVATE_CONTENT,
+    API_ERROR_CODES.DRM_PROTECTED,
+    API_ERROR_CODES.GEO_RESTRICTED,
+    API_ERROR_CODES.AGE_RESTRICTED,
+    API_ERROR_CODES.NO_SUPPORTED_FORMAT,
+    API_ERROR_CODES.EXTRACTOR_TIMEOUT,
+    API_ERROR_CODES.EXTRACTOR_FAILED,
+    API_ERROR_CODES.SOURCE_EXPIRED,
+    API_ERROR_CODES.DOWNLOAD_FAILED,
+    API_ERROR_CODES.OUTPUT_INVALID
+  ])("exposes a stable redacted public message for Vimeo boundary code %s", (code) => {
+    const error = new AppError(code);
+    expect(error.message).toBe(API_ERROR_MESSAGES[code]);
+    expect(error.message).not.toMatch(/https?:\/\/|stderr|yt-dlp|\/private\/|signature=|cookie|authorization/i);
+    expect(API_ERROR_STATUS[code]).toBeGreaterThanOrEqual(400);
+    expect(API_ERROR_STATUS[code]).toBeLessThan(600);
+  });
 });

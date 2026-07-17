@@ -85,6 +85,41 @@ describe("strict yt-dlp metadata parser", () => {
     );
   });
 
+  it("filters DRM, custom-header, cookie, video-only, and audio-only choices when no progressive source remains", () => {
+    const value = metadata({ formats: [
+      { format_id: "drm", protocol: "https", url: "https://media.example/drm.mp4", ext: "mp4", vcodec: "h264", acodec: "aac", has_drm: true },
+      { format_id: "headers", protocol: "https", url: "https://media.example/headers.mp4", ext: "mp4", vcodec: "h264", acodec: "aac", http_headers: { Authorization: "secret" } },
+      { format_id: "cookies", protocol: "https", url: "https://media.example/cookies.mp4", ext: "mp4", vcodec: "h264", acodec: "aac", cookies: "secret" },
+      { format_id: "video", protocol: "https", url: "https://media.example/video.mp4", ext: "mp4", vcodec: "h264", acodec: "none" },
+      { format_id: "audio", protocol: "https", url: "https://media.example/audio.webm", ext: "webm", vcodec: "none", acodec: "opus" }
+    ] });
+    expect(() => parseYtDlpMetadataJson(value, "vimeo")).toThrowError(
+      expect.objectContaining({ code: API_ERROR_CODES.NO_SUPPORTED_FORMAT })
+    );
+  });
+
+  it.each([
+    [{ title: null }, API_ERROR_CODES.EXTRACTOR_FAILED],
+    [{ duration: -1 }, undefined],
+    [{ formats: [] }, API_ERROR_CODES.NO_SUPPORTED_FORMAT]
+  ])("handles invalid bounded metadata %#", (overrides, expectedCode) => {
+    if (expectedCode) {
+      expect(() => parseYtDlpMetadataJson(metadata(overrides), "vimeo")).toThrowError(
+        expect.objectContaining({ code: expectedCode })
+      );
+      return;
+    }
+    expect(parseYtDlpMetadataJson(metadata(overrides), "vimeo").durationSeconds).toBeUndefined();
+  });
+
+  it("rejects malformed and oversized JSON", () => {
+    expect(() => parseYtDlpMetadataJson("{broken", "vimeo")).toThrowError(
+      expect.objectContaining({ code: API_ERROR_CODES.EXTRACTOR_FAILED })
+    );
+    expect(() => parseYtDlpMetadataJson(`{"padding":"${"x".repeat(8 * 1024 * 1024)}"}`, "vimeo"))
+      .toThrowError(expect.objectContaining({ code: API_ERROR_CODES.EXTRACTOR_FAILED }));
+  });
+
   it("rejects excessive nesting before parsing", () => {
     const value = `${"[".repeat(65)}0${"]".repeat(65)}`;
     expect(() => parseYtDlpMetadataJson(value, "vimeo")).toThrowError(

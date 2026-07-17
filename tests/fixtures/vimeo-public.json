@@ -1,0 +1,116 @@
+{
+  "_type": "video",
+  "extractor_key": "Vimeo",
+  "id": "123456789",
+  "title": "Deterministic Vimeo fixture",
+  "availability": "public",
+  "duration": 1,
+  "is_live": false,
+  "formats": [
+    {
+      "format_id": "http-1080p",
+      "protocol": "https",
+      "url": "https://media.example.test/fresh-1080.mp4?signature=server-only",
+      "ext": "mp4",
+      "vcodec": "avc1.640028",
+      "acodec": "mp4a.40.2",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "tbr": 2800,
+      "filesize_approx": 1048576
+    },
+    {
+      "format_id": "http-720p",
+      "protocol": "https",
+      "url": "https://media.example.test/fresh-720.mp4?signature=server-only",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "tbr": 1600,
+      "filesize": 524288
+    },
+    {
+      "format_id": "http-720p-duplicate",
+      "protocol": "https",
+      "url": "https://duplicate.example.test/video.mp4",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "tbr": 1600,
+      "filesize": 524288
+    },
+    {
+      "format_id": "hls",
+      "protocol": "m3u8_native",
+      "url": "https://media.example.test/master.m3u8",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720,
+      "filesize": 524288
+    },
+    {
+      "format_id": "dash",
+      "protocol": "http_dash_segments",
+      "url": "https://media.example.test/manifest.mpd",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "none",
+      "width": 1920,
+      "height": 1080,
+      "filesize": 524288
+    },
+    {
+      "format_id": "video-only",
+      "protocol": "https",
+      "url": "https://media.example.test/video-only.mp4",
+      "ext": "mp4",
+      "vcodec": "avc1.640028",
+      "acodec": "none",
+      "width": 1920,
+      "height": 1080,
+      "filesize": 524288
+    },
+    {
+      "format_id": "audio-only",
+      "protocol": "https",
+      "url": "https://media.example.test/audio-only.m4a",
+      "ext": "m4a",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "filesize": 65536
+    },
+    {
+      "format_id": "drm",
+      "protocol": "https",
+      "url": "https://media.example.test/drm.mp4",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720,
+      "filesize": 524288,
+      "has_drm": true
+    },
+    {
+      "format_id": "custom-headers",
+      "protocol": "https",
+      "url": "https://media.example.test/header-bound.mp4",
+      "ext": "mp4",
+      "vcodec": "avc1.4d401f",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720,
+      "filesize": 524288,
+      "http_headers": { "Authorization": "server-secret" }
+    }
+  ]
+}

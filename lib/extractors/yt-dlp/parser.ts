@@ -83,7 +83,8 @@ function parseDirectUrl(value: unknown): URL | null {
 function parseFormat(value: unknown): DirectMediaReference | null {
   if (!record(value)) return null;
   if (Array.isArray(value.fragments) && value.fragments.length > 0) return null;
-  if (value.has_drm === true) throw new AppError(API_ERROR_CODES.DRM_PROTECTED);
+  if (value.has_drm === true || value.cookies !== undefined) return null;
+  if (record(value.http_headers) && Object.keys(value.http_headers).length > 0) return null;
   const protocol = boundedString(value.protocol, 32);
   if (protocol !== "https") return null;
   const url = parseDirectUrl(value.url);

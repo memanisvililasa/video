@@ -240,7 +240,11 @@ export function createMediaWorkerProcessor(
       });
       session.assertActive();
       const selected = extracted.formats.find((format) => format.id === payload.formatId);
-      if (!selected) throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
+      if (!selected) {
+        throw new AppError(
+          extractor.id === "vimeo" ? API_ERROR_CODES.SOURCE_EXPIRED : API_ERROR_CODES.UNSUPPORTED_URL
+        );
+      }
       const inputExtension = sourceExtension(selected.ext);
       const output = outputDefinition(payload.processingPreset, inputExtension);
       await progress.flush(5);

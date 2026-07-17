@@ -13,6 +13,7 @@ type SocketConnector = (options: net.NetConnectOpts) => Socket;
 
 export type MetadataEgressGuardOptions = Readonly<{
   signal?: AbortSignal;
+  allowHostname?: (hostname: string) => boolean;
   resolveAddress?: AddressResolver;
   connectSocket?: SocketConnector;
   maxTunnels?: number;
@@ -81,7 +82,7 @@ export async function startMetadataEgressGuard(
   server.on("connect", (request, client, head) => {
     const clientSocket = client as Socket;
     const authority = parseAuthority(request.url ?? "");
-    if (!authority || controller.signal.aborted) {
+    if (!authority || controller.signal.aborted || options.allowHostname && !options.allowHostname(authority.hostname)) {
       genericProxyFailure(clientSocket, 403);
       return;
     }

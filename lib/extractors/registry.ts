@@ -2,9 +2,11 @@ import { AppError } from "@/lib/errors";
 import { genericDirectMediaExtractor } from "@/lib/extractors/generic-direct-media";
 import { placeholderExtractors } from "@/lib/extractors/placeholders";
 import type { Extractor } from "@/lib/extractors/types";
+import { vimeoExtractor } from "@/lib/extractors/vimeo";
 
 const extractors: Extractor[] = [
   genericDirectMediaExtractor,
+  vimeoExtractor,
   ...placeholderExtractors
 ];
 

@@ -17,8 +17,7 @@ describe("personal-use extractor registry", () => {
     ["instagram", "https://www.instagram.com/reel/public"],
     ["facebook", "https://www.facebook.com/watch/?v=1"],
     ["x", "https://x.com/creator/status/1"],
-    ["reddit", "https://www.reddit.com/r/videos/comments/public"],
-    ["vimeo", "https://vimeo.com/123"]
+    ["reddit", "https://www.reddit.com/r/videos/comments/public"]
   ])("keeps the %s page boundary explicit", async (id, value) => {
     const extractor = requireExtractor(new URL(value));
     expect(extractor.id).toBe(id);
@@ -26,6 +25,23 @@ describe("personal-use extractor registry", () => {
       code: "UNSUPPORTED_URL",
       status: 400
     });
+  });
+
+  it.each([
+    "https://vimeo.com/123",
+    "https://www.vimeo.com/123",
+    "https://player.vimeo.com/video/123"
+  ])("enables only the Vimeo single-video extractor for %s", (value) => {
+    expect(requireExtractor(new URL(value)).id).toBe("vimeo");
+  });
+
+  it.each([
+    "http://vimeo.com/123",
+    "https://vimeo.com/showcase/123",
+    "https://vimeo.com/channels/staffpicks/123",
+    "https://vimeo.com/user123"
+  ])("does not classify out-of-scope Vimeo pages: %s", (value) => {
+    expect(findExtractor(new URL(value))).toBeUndefined();
   });
 
   it("does not match lookalike platform hostnames", () => {

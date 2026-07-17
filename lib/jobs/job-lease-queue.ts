@@ -1,6 +1,7 @@
 import "server-only";
 import { createHash, randomUUID } from "node:crypto";
 import type { ProcessingPreset } from "@/lib/ffmpeg/types";
+import { canonicalizeVimeoSourceInput } from "@/lib/extractors/vimeo-url";
 import type { MediaJobSourceMetadataInput } from "@/lib/jobs/job-record";
 import type { MediaJobRecord, MediaJobResult } from "@/lib/jobs/types";
 import { validateVideoUrl } from "@/lib/security/url-validation";
@@ -162,14 +163,15 @@ export function sanitizeMediaJobWorkItem(value: unknown): MediaJobWorkItem {
     maxLength: DURABLE_JOB_PAYLOAD_LIMITS.sourceUrlCharacters
   });
   if (!validation.ok) throw new TypeError("Durable media job payload is invalid.");
-  for (const key of validation.url.searchParams.keys()) {
+  const canonicalUrl = canonicalizeVimeoSourceInput(input.sourceUrl, validation.url);
+  for (const key of canonicalUrl.searchParams.keys()) {
     if (SENSITIVE_QUERY_PARAMETER.test(key)) {
       throw new TypeError("Durable media job payload must not contain credentials or tokens.");
     }
   }
 
   const workItem = Object.freeze({
-    sourceUrl: validation.normalizedUrl,
+    sourceUrl: canonicalUrl.toString(),
     formatId: input.formatId,
     processingPreset: input.processingPreset as ProcessingPreset
   });

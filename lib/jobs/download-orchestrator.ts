@@ -1,6 +1,7 @@
 import { env } from "@/lib/config/env";
 import { AppError } from "@/lib/errors";
 import type { Extractor } from "@/lib/extractors/types";
+import { canonicalizeVimeoSourceInput } from "@/lib/extractors/vimeo-url";
 import { requireExtractor } from "@/lib/extractors/registry";
 import { extractAudioToM4a } from "@/lib/ffmpeg/audio";
 import { convertMediaToCompatibleMp4 } from "@/lib/ffmpeg/convert";
@@ -138,8 +139,13 @@ export function createDownloadOrchestrationService(
 
   function enqueueDownloadJob(request: EnqueueDownloadJobRequest): Promise<EnqueuedMediaJob> {
     validateRequest(request);
+    const initialValidation = dependencies.validateUrl(request.url);
+    if (!initialValidation.ok) {
+      throw new AppError(initialValidation.code, initialValidation.message);
+    }
+    const canonicalUrl = canonicalizeVimeoSourceInput(request.url, initialValidation.url);
     const trustedRequest = Object.freeze({
-      url: request.url,
+      url: canonicalUrl.toString(),
       formatId: request.formatId,
       processingPreset: request.processingPreset,
       rightsConfirmed: true as const
@@ -173,7 +179,10 @@ export function createDownloadOrchestrationService(
           assertNotAborted(signal);
           const selectedFormat = metadata.formats.find((format) => format.id === trustedRequest.formatId);
           if (!selectedFormat) {
-            throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL, "Запрошенный формат недоступен для этой ссылки.");
+            throw new AppError(
+              extractor.id === "vimeo" ? API_ERROR_CODES.SOURCE_EXPIRED : API_ERROR_CODES.UNSUPPORTED_URL,
+              extractor.id === "vimeo" ? undefined : "Запрошенный формат недоступен для этой ссылки."
+            );
           }
           updateProgress(15);
 

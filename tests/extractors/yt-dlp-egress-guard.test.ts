@@ -78,6 +78,20 @@ describe("yt-dlp metadata egress guard", () => {
     expect(resolved).toBe(false);
   });
 
+  it("rejects a CONNECT hostname outside the platform allowlist before DNS", async () => {
+    let resolved = false;
+    const guard = await startMetadataEgressGuard({
+      allowHostname: (hostname) => hostname === "vimeo.com",
+      resolveAddress: async () => { resolved = true; return { address: "203.0.113.1", family: 4 }; }
+    });
+    cleanup.push(() => guard.close());
+    const socket = await connect(guard.proxyUrl);
+    cleanup.push(async () => { socket.destroy(); });
+    socket.write("CONNECT attacker.example:443 HTTP/1.1\r\nHost: attacker.example:443\r\n\r\n");
+    await expect(readUntil(socket, /403 Connection Rejected/)).resolves.toMatch(/403/);
+    expect(resolved).toBe(false);
+  });
+
   it("returns a generic rejection when SSRF validation fails", async () => {
     const guard = await startMetadataEgressGuard({
       resolveAddress: async () => { throw new Error("blocked-private-address"); }

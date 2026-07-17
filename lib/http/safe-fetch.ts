@@ -21,6 +21,7 @@ export type SafeHeaders = Record<string, string>;
 export type SafeFetchOptions = {
   timeoutSeconds?: number;
   maxRedirects?: number;
+  requireHttps?: boolean;
   signal?: AbortSignal;
 };
 
@@ -61,9 +62,13 @@ type RequestLookupCallback = (error: NodeJS.ErrnoException | null, address: stri
 type SafeLookupAddress = Readonly<{ address: string; family: number }>;
 type SafeAddressLookup = (hostname: string) => Promise<readonly SafeLookupAddress[]>;
 
-function assertSafeUrl(url: URL, redirect = false): URL {
+function assertSafeUrl(url: URL, redirect = false, requireHttps = false): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new AppError(API_ERROR_CODES.INVALID_URL, "Разрешены только HTTP(S)-ссылки.", 400);
+  }
+
+  if (requireHttps && (url.protocol !== "https:" || url.port && url.port !== "443")) {
+    throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник нарушил HTTPS transport policy.", 502);
   }
 
   if (url.username || url.password) {
@@ -163,7 +168,7 @@ export async function resolveSafeAddress(
   return canonicalAddresses[0];
 }
 
-export function getRedirectTarget(currentUrl: URL, location: string | undefined): URL {
+export function getRedirectTarget(currentUrl: URL, location: string | undefined, requireHttps = false): URL {
   if (!location) {
     throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул redirect без Location.", 502);
   }
@@ -176,7 +181,7 @@ export function getRedirectTarget(currentUrl: URL, location: string | undefined)
   }
 
   target.hash = "";
-  return assertSafeUrl(target, true);
+  return assertSafeUrl(target, true, requireHttps);
 }
 
 function createAbortError(): AppError {
@@ -184,7 +189,7 @@ function createAbortError(): AppError {
 }
 
 async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders, options: Required<SafeFetchOptions>): Promise<RequestResult> {
-  assertSafeUrl(url);
+  assertSafeUrl(url, false, options.requireHttps);
   const resolved = await resolveSafeAddress(url.hostname, options.timeoutSeconds, options.signal);
 
   return new Promise<RequestResult>((resolve, reject) => {
@@ -262,10 +267,11 @@ async function requestWithRedirects(
   const requestOptions: Required<SafeFetchOptions> = {
     timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
     maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
+    requireHttps: options.requireHttps ?? false,
     signal: options.signal ?? new AbortController().signal
   };
 
-  let currentUrl = assertSafeUrl(new URL(initialUrl.toString()));
+  let currentUrl = assertSafeUrl(new URL(initialUrl.toString()), false, requestOptions.requireHttps);
   for (let redirectCount = 0; redirectCount <= requestOptions.maxRedirects; redirectCount += 1) {
     const result = await requestOnce(currentUrl, method, headers, requestOptions);
 
@@ -278,7 +284,7 @@ async function requestWithRedirects(
       throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
     }
 
-    currentUrl = getRedirectTarget(currentUrl, result.headers.location);
+    currentUrl = getRedirectTarget(currentUrl, result.headers.location, requestOptions.requireHttps);
   }
 
   throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);

@@ -10,6 +10,8 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFileDeliveryRouteHandler } from "@/app/api/file/[id]/handler";
 import type { Extractor } from "@/lib/extractors/types";
+import { createVimeoExtractor, selectVimeoProgressiveFormats } from "@/lib/extractors/vimeo";
+import { parseYtDlpMetadataJson, type ParsedPlatformMetadata } from "@/lib/extractors/yt-dlp/parser";
 import { createAudioExtractor } from "@/lib/ffmpeg/audio";
 import { createCompatibleMp4Converter } from "@/lib/ffmpeg/convert";
 import { createMediaProbe } from "@/lib/ffmpeg/probe";
@@ -30,6 +32,7 @@ const MAX_BYTES = 10 * 1024 * 1024;
 let temporaryRoot: string;
 let storageRoot: string;
 let fixturePath: string;
+let vimeoMetadata: ParsedPlatformMetadata;
 let nextJob = 0;
 let nextFile = 0;
 let nextSource = 0;
@@ -38,6 +41,10 @@ beforeAll(async () => {
   temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "videosave-local-smoke-"));
   storageRoot = path.join(temporaryRoot, "storage");
   fixturePath = path.join(temporaryRoot, "fixture.mp4");
+  vimeoMetadata = parseYtDlpMetadataJson(
+    await readFile(path.join(process.cwd(), "tests/fixtures/vimeo-public.json"), "utf8"),
+    "vimeo"
+  );
   await mkdir(storageRoot);
   storageRoot = await realpath(storageRoot);
   await runFile("ffmpeg", [
@@ -156,6 +163,30 @@ function fixtureExtractor(): Extractor {
   };
 }
 
+function vimeoFixtureExtractor(extractCalls: URL[]): Extractor {
+  return createVimeoExtractor({
+    metadataRunner: {
+      async extract(_platform, pageUrl) {
+        extractCalls.push(new URL(pageUrl));
+        return vimeoMetadata;
+      }
+    },
+    async downloadToFile(url, destinationPath, options) {
+      await copyFile(fixturePath, destinationPath);
+      const sizeBytes = (await lstat(destinationPath)).size;
+      options.onProgress?.(sizeBytes, sizeBytes);
+      return {
+        finalUrl: new URL(url),
+        statusCode: 200,
+        headers: { "content-type": "video/mp4", "content-length": String(sizeBytes) },
+        contentType: "video/mp4",
+        contentLength: sizeBytes,
+        sizeBytes
+      };
+    }
+  });
+}
+
 async function waitForTerminal(get: () => Promise<MediaJobSnapshot>): Promise<MediaJobSnapshot> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -233,6 +264,34 @@ describe("personal-use local real-media pipeline", () => {
     expect(delivered.equals(await readFile(harness.registry.getRegisteredFile(result.fileId)!.path))).toBe(true);
   });
 
+  it.each([
+    ["original", "mp4"],
+    ["compatible-mp4", "mp4"],
+    ["audio-only", "m4a"]
+  ] as const)("runs deterministic Vimeo re-extraction through %s and final-only delivery", async (preset, extension) => {
+    const extractionPages: URL[] = [];
+    const harness = createHarness(vimeoFixtureExtractor(extractionPages));
+    const selected = selectVimeoProgressiveFormats(vimeoMetadata, MAX_BYTES)[0];
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://player.vimeo.com/video/123456789",
+      formatId: selected.stableId,
+      processingPreset: preset,
+      rightsConfirmed: true
+    });
+    const ready = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    if (ready.status !== "ready" || !ready.result) {
+      throw new Error(`Vimeo smoke ${preset} ended in ${ready.status}:${ready.error?.code ?? "none"}.`);
+    }
+    expect(extractionPages.map((url) => url.toString())).toEqual([
+      "https://vimeo.com/123456789",
+      "https://vimeo.com/123456789"
+    ]);
+    expect(ready.result.filename).toMatch(new RegExp(`\\.${extension}$`));
+    expect(ready.result.downloadUrl).toBe(`/api/file/${ready.result.fileId}`);
+    expect(JSON.stringify(ready)).not.toMatch(/media\.example|signature=|sourceUrl/i);
+    expect(harness.registry.listRegisteredFiles().every((file) => file.kind === "final")).toBe(true);
+  });
+
   it("cancels an active bounded download and removes its partial file", async () => {
     const stream = new PassThrough();
     const downloader = createSafeFileDownloader({
@@ -279,5 +338,44 @@ describe("personal-use local real-media pipeline", () => {
     expect(cancelled.status).toBe("cancelled");
     const jobDirectory = path.join(storageRoot, "jobs", enqueued.jobId);
     await expect(lstat(path.join(jobDirectory, "source.mp4.download"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cancels an active Vimeo download and removes its partial file", async () => {
+    const stream = new PassThrough();
+    const downloader = createSafeFileDownloader({
+      requestDownload: async () => ({
+        finalUrl: new URL("https://media.example.test/fresh-1080.mp4"),
+        statusCode: 200,
+        headers: {},
+        contentType: "video/mp4",
+        stream: stream as unknown as http.IncomingMessage
+      } satisfies SafeDownloadStreamResult)
+    });
+    const extractor = createVimeoExtractor({
+      metadataRunner: { extract: async () => vimeoMetadata },
+      downloadToFile: downloader
+    });
+    const selected = selectVimeoProgressiveFormats(vimeoMetadata, MAX_BYTES)[0];
+    const harness = createHarness(extractor);
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://vimeo.com/123456789",
+      formatId: selected.stableId,
+      processingPreset: "compatible-mp4",
+      rightsConfirmed: true
+    });
+    stream.write("partial");
+    let running: MediaJobSnapshot | undefined;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      running = await harness.service.getDownloadJob(enqueued.jobId);
+      if (running.status === "running" && running.progress >= 10) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(running?.status).toBe("running");
+    await harness.service.cancelDownloadJob(enqueued.jobId);
+    const cancelled = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    expect(cancelled.status).toBe("cancelled");
+    const jobDirectory = path.join(storageRoot, "jobs", enqueued.jobId);
+    await expect(lstat(path.join(jobDirectory, "source.mp4.download"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(harness.registry.listRegisteredFiles().filter((file) => file.jobId === enqueued.jobId)).toEqual([]);
   });
 });

@@ -2,8 +2,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createYtDlpMetadataRunner } from "@/lib/extractors/yt-dlp/runner";
-import type { BoundedProcessRunOptions } from "@/lib/process/bounded-process";
+import { createYtDlpMetadataRunner, mapYtDlpProcessError } from "@/lib/extractors/yt-dlp/runner";
+import { BoundedProcessError, type BoundedProcessRunOptions } from "@/lib/process/bounded-process";
 import { API_ERROR_CODES } from "@/lib/types";
 
 const roots = new Set<string>();
@@ -45,12 +45,16 @@ describe("controlled yt-dlp metadata runner", () => {
       return { stdout: calls.length === 1 ? "2026.07.04\n" : fixture(), stderr: "", stderrTruncated: false, durationMs: 1 };
     });
     const close = vi.fn(async () => undefined);
+    let allowHostname: ((hostname: string) => boolean) | undefined;
     const runner = createYtDlpMetadataRunner({
       binaryPath: "/approved/yt-dlp",
       nodeEnv: "production",
       temporaryRoot,
       processRunner,
-      guardFactory: async () => ({ proxyUrl: "http://127.0.0.1:41000", close })
+      guardFactory: async (options) => {
+        allowHostname = options.allowHostname;
+        return { proxyUrl: "http://127.0.0.1:41000", close };
+      }
     });
 
     await expect(runner.extract("vimeo", new URL("https://vimeo.example/123"))).resolves.toMatchObject({ sourceId: "fixture" });
@@ -61,11 +65,18 @@ describe("controlled yt-dlp metadata runner", () => {
       "--no-exec", "--skip-download", "--dump-single-json", "--no-playlist"
     ]));
     expect(calls[1].args).not.toContain("--cookies");
+    expect(calls[1].args).not.toContain("--netrc");
+    expect(calls[1].args).not.toContain("--cookies-from-browser");
+    expect(calls[1].args).not.toContain("--proxy-header");
     expect(calls[1].args.at(-1)).toBe("https://vimeo.example/123");
     expect(calls[1].env).not.toHaveProperty("HTTP_PROXY");
     expect(calls[1].env).not.toHaveProperty("XDG_CONFIG_DIRS");
     expect(calls[1].env.HOME).toContain(temporaryRoot);
     expect(close).toHaveBeenCalledOnce();
+    expect(allowHostname?.("vimeo.com")).toBe(true);
+    expect(allowHostname?.("player.vimeo.com")).toBe(true);
+    expect(allowHostname?.("video.vimeocdn.com")).toBe(true);
+    expect(allowHostname?.("vimeo.com.attacker.example")).toBe(false);
     expect(await readdir(temporaryRoot)).toEqual([]);
   });
 
@@ -87,5 +98,47 @@ describe("controlled yt-dlp metadata runner", () => {
       processRunner: async () => ({ stdout: "2026.08.01\n", stderr: "", stderrTruncated: false, durationMs: 1 })
     });
     await expect(runner.checkVersion()).rejects.toMatchObject({ code: API_ERROR_CODES.EXTRACTOR_FAILED });
+  });
+
+  it("forwards AbortSignal to the bounded metadata process", async () => {
+    const temporaryRoot = await root();
+    const controller = new AbortController();
+    const signals: Array<AbortSignal | undefined> = [];
+    const processRunner = vi.fn(async (options: BoundedProcessRunOptions) => {
+      signals.push(options.signal);
+      return { stdout: signals.length === 1 ? "2026.07.04\n" : fixture(), stderr: "", stderrTruncated: false, durationMs: 1 };
+    });
+    const runner = createYtDlpMetadataRunner({
+      binaryPath: "/approved/yt-dlp",
+      nodeEnv: "production",
+      temporaryRoot,
+      processRunner,
+      guardFactory: async () => ({ proxyUrl: "http://127.0.0.1:41000", close: async () => undefined })
+    });
+    await runner.extract("vimeo", new URL("https://vimeo.com/123"), controller.signal);
+    expect(signals).toEqual([undefined, controller.signal]);
+  });
+
+  it.each([
+    ["Video is unavailable", API_ERROR_CODES.CONTENT_UNAVAILABLE],
+    ["This is a private video", API_ERROR_CODES.PRIVATE_CONTENT],
+    ["This video is password protected", API_ERROR_CODES.PRIVATE_CONTENT],
+    ["Login required; use --cookies", API_ERROR_CODES.LOGIN_REQUIRED],
+    ["This video is DRM protected", API_ERROR_CODES.DRM_PROTECTED],
+    ["This video is not available in your country", API_ERROR_CODES.GEO_RESTRICTED],
+    ["This video is age-restricted", API_ERROR_CODES.AGE_RESTRICTED],
+    ["unknown raw failure https://signed.example/source", API_ERROR_CODES.EXTRACTOR_FAILED]
+  ])("maps yt-dlp failure safely without returning stderr: %s", (stderr, code) => {
+    const mapped = mapYtDlpProcessError(new BoundedProcessError("non-zero-exit", 1, null, stderr));
+    expect(mapped.code).toBe(code);
+    expect(mapped.message).not.toContain(stderr);
+    expect(mapped.message).not.toMatch(/https?:\/\/|stderr/i);
+  });
+
+  it("maps bounded timeout and cancellation without inspecting raw stderr", () => {
+    expect(mapYtDlpProcessError(new BoundedProcessError("timeout", null, "SIGKILL", "private URL")))
+      .toMatchObject({ code: API_ERROR_CODES.EXTRACTOR_TIMEOUT });
+    expect(mapYtDlpProcessError(new BoundedProcessError("aborted", null, "SIGTERM", "private URL")))
+      .toMatchObject({ code: API_ERROR_CODES.JOB_CANCELLED });
   });
 });

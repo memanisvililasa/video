@@ -58,6 +58,15 @@ describe("safe-fetch canonical DNS pinning", () => {
 describe("safe-fetch redirect policy", () => {
   const initial = new URL("https://public.example/media.mp4");
 
+  it("rejects HTTPS downgrade and custom ports for strict platform media", () => {
+    expect(() => getRedirectTarget(initial, "http://cdn.example/video.mp4", true)).toThrowError(
+      expect.objectContaining({ code: API_ERROR_CODES.DOWNLOAD_FAILED })
+    );
+    expect(() => getRedirectTarget(initial, "https://cdn.example:444/video.mp4", true)).toThrowError(
+      expect.objectContaining({ code: API_ERROR_CODES.DOWNLOAD_FAILED })
+    );
+  });
+
   it.each(["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1"])(
     "rejects a redirect literal to mapped unsafe IPv4: %s",
     (address) => expect(() => getRedirectTarget(initial, `https://[${address}]/fixture.mp4`)).toThrow(AppError)
