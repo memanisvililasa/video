@@ -3,7 +3,7 @@ import { link, rm, unlink } from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import { lookup } from "node:dns/promises";
-import { Transform } from "node:stream";
+import { Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { isIP } from "node:net";
 import { AppError } from "@/lib/errors";
@@ -20,7 +20,10 @@ const DEFAULT_METADATA_TIMEOUT_SECONDS = 10;
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 120;
 const DEFAULT_MAX_REDIRECTS = 3;
 const MAX_RESPONSE_HEADER_BYTES = 16 * 1024;
+const MAX_IN_MEMORY_BODY_BYTES = 8 * 1024 * 1024;
 const USER_AGENT = "VideoSave-SafeFetcher/1.0";
+const REDDIT_PUBLIC_USER_AGENT = "VideoSave/1.0 (personal-use Reddit metadata)";
+const REDDIT_PUBLIC_ACCEPT = "application/json";
 
 export type SafeHeaders = Record<string, string>;
 
@@ -28,7 +31,7 @@ export type SafeFetchOptions = {
   timeoutSeconds?: number;
   maxRedirects?: number;
   requireHttps?: boolean;
-  requestProfile?: "default" | "youtube-public-v1";
+  requestProfile?: "default" | "youtube-public-v1" | "reddit-public-v1";
   allowHostname?: (hostname: string) => boolean;
   signal?: AbortSignal;
 };
@@ -50,6 +53,15 @@ export type SafeDownloadResult = SafeResponseMetadata & {
   sizeBytes: number;
 };
 
+export type SafeBodyFetchOptions = SafeFetchOptions & {
+  maxBytes: number;
+};
+
+export type SafeBodyFetchResult = SafeResponseMetadata & {
+  body: Buffer;
+  sizeBytes: number;
+};
+
 type RequestMethod = "HEAD" | "GET";
 
 export type SafeDownloadStreamResult = SafeResponseMetadata & {
@@ -60,6 +72,10 @@ type RequestResult = SafeDownloadStreamResult;
 
 export type SafeFileDownloaderDependencies = {
   requestDownload: (url: URL, options: SafeFetchOptions) => Promise<SafeDownloadStreamResult>;
+};
+
+export type SafeBodyFetcherDependencies = {
+  requestBody: (url: URL, options: SafeFetchOptions) => Promise<SafeDownloadStreamResult>;
 };
 
 type RequestLookupOptions = {
@@ -225,8 +241,16 @@ async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders
       {
         method,
         headers: {
-          "User-Agent": options.requestProfile === "youtube-public-v1" ? YOUTUBE_PUBLIC_USER_AGENT : USER_AGENT,
-          Accept: options.requestProfile === "youtube-public-v1" ? YOUTUBE_PUBLIC_ACCEPT : "*/*",
+          "User-Agent": options.requestProfile === "youtube-public-v1"
+            ? YOUTUBE_PUBLIC_USER_AGENT
+            : options.requestProfile === "reddit-public-v1"
+              ? REDDIT_PUBLIC_USER_AGENT
+              : USER_AGENT,
+          Accept: options.requestProfile === "youtube-public-v1"
+            ? YOUTUBE_PUBLIC_ACCEPT
+            : options.requestProfile === "reddit-public-v1"
+              ? REDDIT_PUBLIC_ACCEPT
+              : "*/*",
           ...(options.requestProfile === "youtube-public-v1"
             ? { "Accept-Language": YOUTUBE_PUBLIC_ACCEPT_LANGUAGE, "Sec-Fetch-Mode": YOUTUBE_PUBLIC_SEC_FETCH_MODE }
             : {}),
@@ -353,6 +377,69 @@ export async function safeGetMetadata(url: URL, options: SafeFetchOptions = {}):
   assertReadableStatus(result);
   return result;
 }
+
+/** @internal Exported for deterministic response-stream tests without network access. */
+export function createSafeBodyFetcher(dependencies: SafeBodyFetcherDependencies) {
+  return async function fetchBody(
+    url: URL,
+    options: SafeBodyFetchOptions
+  ): Promise<SafeBodyFetchResult> {
+    if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1 || options.maxBytes > MAX_IN_MEMORY_BODY_BYTES) {
+      throw new TypeError("Safe body byte limit is invalid.");
+    }
+    const signal = options.signal ?? new AbortController().signal;
+    const result = await dependencies.requestBody(url, {
+      timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
+      maxRedirects: options.maxRedirects,
+      requireHttps: options.requireHttps,
+      requestProfile: options.requestProfile,
+      allowHostname: options.allowHostname,
+      signal
+    });
+    if (typeof result.contentLength === "number" && result.contentLength > options.maxBytes) {
+      result.stream?.destroy();
+      throw new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Ответ источника превышает допустимый размер.", 413);
+    }
+    const stream = result.stream;
+    if (!stream) throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник не вернул тело ответа.", 502);
+
+    const chunks: Buffer[] = [];
+    let sizeBytes = 0;
+    const collector = new Writable({
+      write(value: Buffer | Uint8Array | string, _encoding, callback) {
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        sizeBytes += chunk.length;
+        if (sizeBytes > options.maxBytes) {
+          callback(new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Ответ источника превышает допустимый размер.", 413));
+          return;
+        }
+        chunks.push(chunk);
+        callback();
+      }
+    });
+
+    try {
+      await pipeline(stream, collector, { signal });
+      if (result.contentLength !== undefined && result.contentLength !== sizeBytes) {
+        throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул неполный ответ.", 502);
+      }
+    } catch (error) {
+      stream.destroy();
+      collector.destroy();
+      if (signal.aborted) throw createAbortError();
+      throw error instanceof AppError
+        ? error
+        : new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Не удалось прочитать ответ источника.", 502);
+    }
+
+    const { stream: _stream, ...metadata } = result;
+    return { ...metadata, body: Buffer.concat(chunks, sizeBytes), sizeBytes };
+  };
+}
+
+export const safeFetchBody = createSafeBodyFetcher({
+  requestBody: (url, options) => requestWithRedirects(url, "GET", {}, options)
+});
 
 /** @internal Exported for fake-stream tests without real network requests. */
 export function createSafeFileDownloader(dependencies: SafeFileDownloaderDependencies) {

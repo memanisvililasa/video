@@ -1,5 +1,5 @@
 import { AppError } from "@/lib/errors";
-import { YT_DLP_EXTRACTOR_KEYS, type PlatformPageId } from "@/lib/extractors/yt-dlp/contract";
+import { YT_DLP_EXTRACTOR_KEYS, type YtDlpMetadataPlatform } from "@/lib/extractors/yt-dlp/contract";
 import {
   YOUTUBE_PUBLIC_ACCEPT,
   YOUTUBE_PUBLIC_ACCEPT_LANGUAGE,
@@ -22,7 +22,7 @@ const ALLOWED_CONTAINERS = new Set(["mp4", "webm", "mov", "m4a"]);
 type JsonRecord = Record<string, unknown>;
 
 export type ParsedPlatformMetadata = Readonly<{
-  platform: PlatformPageId;
+  platform: YtDlpMetadataPlatform;
   sourceId: string;
   title: string;
   durationSeconds?: number;
@@ -67,7 +67,7 @@ function assertJsonDepth(value: string): void {
   if (inString || depth !== 0) throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
 }
 
-function mapAvailability(value: unknown, platform: PlatformPageId): void {
+function mapAvailability(value: unknown, platform: YtDlpMetadataPlatform): void {
   if (value === "private") throw new AppError(API_ERROR_CODES.PRIVATE_CONTENT);
   if (value === "needs_auth") throw new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
   if (value === "subscriber_only") {
@@ -116,7 +116,7 @@ function parseDynamicRange(value: unknown, formatNote: string | undefined): "sdr
   return "unknown";
 }
 
-function parseFormat(value: unknown, platform: PlatformPageId): DirectMediaReference | null {
+function parseFormat(value: unknown, platform: YtDlpMetadataPlatform): DirectMediaReference | null {
   if (!record(value)) return null;
   if (Array.isArray(value.fragments) && value.fragments.length > 0) return null;
   if (value.has_drm === true || value.cookies !== undefined) return null;
@@ -162,7 +162,7 @@ function parseFormat(value: unknown, platform: PlatformPageId): DirectMediaRefer
 
 export function parseYtDlpMetadataJson(
   value: string,
-  platform: PlatformPageId
+  platform: YtDlpMetadataPlatform
 ): ParsedPlatformMetadata {
   if (typeof value !== "string" || Buffer.byteLength(value) > MAX_JSON_BYTES) {
     throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);

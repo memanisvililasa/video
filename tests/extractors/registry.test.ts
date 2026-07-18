@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { findExtractor, requireExtractor } from "@/lib/extractors/registry";
+import { findExtractor, listExtractors, requireExtractor } from "@/lib/extractors/registry";
 
 describe("personal-use extractor registry", () => {
+  it("keeps Stage 8.4A metadata outside the production extractor registry", () => {
+    expect(listExtractors().filter((extractor) => extractor.id === "reddit")).toHaveLength(1);
+    expect(requireExtractor(new URL("https://www.reddit.com/r/videos/comments/abc123/synthetic_post/")).id).toBe("reddit");
+  });
+
   it.each([
     "https://v.redd.it/abc/DASH_720.mp4",
     "https://video.twimg.com/source/video.webm",

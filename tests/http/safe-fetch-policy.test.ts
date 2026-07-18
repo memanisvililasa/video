@@ -83,6 +83,29 @@ describe("safe-fetch redirect policy", () => {
     )).toThrowError(expect.objectContaining({ code: API_ERROR_CODES.DOWNLOAD_FAILED }));
   });
 
+  it("keeps Reddit metadata redirects inside the exact page-host allowlist", () => {
+    const hosts = new Set(["reddit.com", "www.reddit.com", "old.reddit.com"]);
+    const allowReddit = (hostname: string) => hosts.has(hostname);
+    expect(getRedirectTarget(
+      new URL("https://www.reddit.com/comments/abc123/.json"),
+      "https://old.reddit.com/comments/abc123/.json",
+      true,
+      allowReddit
+    ).hostname).toBe("old.reddit.com");
+    for (const target of [
+      "https://reddit.com.attacker.example/comments/abc123/.json",
+      "https://v.redd.it/media42/DASHPlaylist.mpd",
+      "https://127.0.0.1/comments/abc123/.json"
+    ]) {
+      expect(() => getRedirectTarget(
+        new URL("https://www.reddit.com/comments/abc123/.json"),
+        target,
+        true,
+        allowReddit
+      )).toThrow(AppError);
+    }
+  });
+
   it.each(["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1"])(
     "rejects a redirect literal to mapped unsafe IPv4: %s",
     (address) => expect(() => getRedirectTarget(initial, `https://[${address}]/fixture.mp4`)).toThrow(AppError)

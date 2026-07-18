@@ -5,9 +5,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createYtDlpMetadataRunner, mapYtDlpProcessError } from "@/lib/extractors/yt-dlp/runner";
 import { BoundedProcessError, type BoundedProcessRunOptions } from "@/lib/process/bounded-process";
 import { API_ERROR_CODES } from "@/lib/types";
-import { YOUTUBE_PUBLIC_USER_AGENT } from "@/lib/extractors/yt-dlp/contract";
+import { YOUTUBE_PUBLIC_USER_AGENT, YT_DLP_EXTRACTOR_KEYS } from "@/lib/extractors/yt-dlp/contract";
 
 const roots = new Set<string>();
+
+it("does not expose RedditIE through the page metadata runner", () => {
+  expect("reddit" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
+});
+
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
   roots.clear();

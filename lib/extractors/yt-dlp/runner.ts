@@ -12,7 +12,7 @@ import {
   YOUTUBE_PUBLIC_USER_AGENT,
   parseYtDlpVersionOutput,
   resolveYtDlpBinaryPath,
-  type PlatformPageId
+  type YtDlpMetadataPlatform
 } from "@/lib/extractors/yt-dlp/contract";
 import { startMetadataEgressGuard, type MetadataEgressGuard } from "@/lib/extractors/yt-dlp/egress-guard";
 import { parseYtDlpMetadataJson, type ParsedPlatformMetadata } from "@/lib/extractors/yt-dlp/parser";
@@ -76,7 +76,7 @@ function versionArguments(): readonly string[] {
   ]);
 }
 
-function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: URL): readonly string[] {
+function metadataArguments(platform: YtDlpMetadataPlatform, proxyUrl: string, pageUrl: URL): readonly string[] {
   const extractor = YT_DLP_EXTRACTOR_KEYS[platform][0];
   const platformArguments = platform === "youtube"
     ? ["--user-agent", YOUTUBE_PUBLIC_USER_AGENT]
@@ -116,7 +116,7 @@ function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: 
 const VIMEO_METADATA_HOST_SUFFIXES = Object.freeze(["vimeo.com", "vimeocdn.com"]);
 const YOUTUBE_METADATA_HOST_SUFFIXES = Object.freeze(["youtube.com"]);
 
-function isAllowedMetadataHostname(platform: PlatformPageId, hostname: string): boolean {
+function isAllowedMetadataHostname(platform: YtDlpMetadataPlatform, hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
   const suffixes = platform === "vimeo"
     ? VIMEO_METADATA_HOST_SUFFIXES
@@ -221,7 +221,7 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
       });
       return verifiedVersion;
     },
-    async extract(platform: PlatformPageId, pageUrl: URL, signal?: AbortSignal): Promise<ParsedPlatformMetadata> {
+    async extract(platform: YtDlpMetadataPlatform, pageUrl: URL, signal?: AbortSignal): Promise<ParsedPlatformMetadata> {
       assertCanonicalPageUrl(pageUrl);
       await this.checkVersion();
       if (signal?.aborted) throw new AppError(API_ERROR_CODES.JOB_CANCELLED);

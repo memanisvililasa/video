@@ -33,6 +33,10 @@ describe("media job request error model", () => {
     API_ERROR_CODES.AGE_RESTRICTED,
     API_ERROR_CODES.LIVE_NOT_SUPPORTED,
     API_ERROR_CODES.PLAYLIST_NOT_SUPPORTED,
+    API_ERROR_CODES.EXTERNAL_MEDIA_NOT_SUPPORTED,
+    API_ERROR_CODES.POST_HAS_NO_VIDEO,
+    API_ERROR_CODES.GALLERY_NOT_SUPPORTED,
+    API_ERROR_CODES.SOURCE_HAS_NO_AUDIO,
     API_ERROR_CODES.NO_SUPPORTED_FORMAT,
     API_ERROR_CODES.EXTRACTOR_TIMEOUT,
     API_ERROR_CODES.EXTRACTOR_FAILED,
@@ -40,7 +44,7 @@ describe("media job request error model", () => {
     API_ERROR_CODES.DOWNLOAD_FAILED,
     API_ERROR_CODES.MERGE_FAILED,
     API_ERROR_CODES.OUTPUT_INVALID
-  ])("exposes a stable redacted public message for Vimeo boundary code %s", (code) => {
+  ])("exposes a stable redacted public message for a platform boundary code %s", (code) => {
     const error = new AppError(code);
     expect(error.message).toBe(API_ERROR_MESSAGES[code]);
     expect(error.message).not.toMatch(/https?:\/\/|stderr|yt-dlp|\/private\/|signature=|cookie|authorization/i);
