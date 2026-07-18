@@ -5,7 +5,8 @@ const platforms = [
   ["WebM", "Прямые публичные HTTP(S)-ссылки на файлы `.webm`."],
   ["QuickTime MOV", "Прямые публичные HTTP(S)-ссылки на файлы `.mov`."],
   ["Vimeo", "Публичные одиночные страницы Vimeo с progressive HTTPS-видео и аудио."],
-  ["Другие платформы", "YouTube, Reddit, TikTok, Instagram, Facebook и X/Twitter page URL пока не поддерживаются."]
+  ["YouTube", "Публичные одиночные watch-видео и Shorts; раздельные публичные потоки безопасно объединяются на сервере."],
+  ["Другие платформы", "Reddit, TikTok, Instagram, Facebook и X/Twitter page URL пока не поддерживаются."]
 ];
 
 export function PlatformsSection() {
@@ -14,7 +15,7 @@ export function PlatformsSection() {
       <div className="max-w-2xl">
         <p className="text-xs font-bold uppercase tracking-[.14em] text-brand">Платформы</p>
         <h2 className="mt-3 text-3xl font-extrabold tracking-[-.05em] text-ink sm:text-4xl">Поддерживаемые источники</h2>
-        <p className="mt-4 text-sm leading-6 text-slate-600">VideoSave принимает прямые публичные видеофайлы и публичные одиночные страницы Vimeo. Источник должен быть доступен без входа, cookies, пароля, paywall, DRM и обхода ограничений.</p>
+        <p className="mt-4 text-sm leading-6 text-slate-600">VideoSave принимает прямые публичные видеофайлы и публичные одиночные страницы Vimeo, YouTube и Shorts. Источник должен быть доступен без входа, cookies, пароля, paywall, DRM и обхода ограничений.</p>
       </div>
       <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {platforms.map(([title, text]) => (

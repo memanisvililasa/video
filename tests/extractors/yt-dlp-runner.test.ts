@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createYtDlpMetadataRunner, mapYtDlpProcessError } from "@/lib/extractors/yt-dlp/runner";
 import { BoundedProcessError, type BoundedProcessRunOptions } from "@/lib/process/bounded-process";
 import { API_ERROR_CODES } from "@/lib/types";
+import { YOUTUBE_PUBLIC_USER_AGENT } from "@/lib/extractors/yt-dlp/contract";
 
 const roots = new Set<string>();
 afterEach(async () => {
@@ -29,6 +30,25 @@ function fixture() {
       format_id: "direct",
       protocol: "https",
       url: "https://media.example/video.mp4",
+      ext: "mp4",
+      vcodec: "h264",
+      acodec: "aac"
+    }]
+  });
+}
+
+function youtubeFixture() {
+  return JSON.stringify({
+    _type: "video",
+    extractor_key: "Youtube",
+    id: "AbCdEfGhI_1",
+    title: "Fixture",
+    availability: "public",
+    live_status: "not_live",
+    formats: [{
+      format_id: "18",
+      protocol: "https",
+      url: "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=1",
       ext: "mp4",
       vcodec: "h264",
       acodec: "aac"
@@ -61,11 +81,16 @@ describe("controlled yt-dlp metadata runner", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1].args).toEqual(expect.arrayContaining([
       "--ignore-config", "--no-config-locations", "--no-plugin-dirs", "--no-remote-components",
-      "--no-js-runtimes", "--no-cookies", "--no-cookies-from-browser", "--no-netrc",
+      "--no-js-runtimes", "--js-runtimes", `node:${process.execPath}`,
+      "--no-cookies", "--no-cookies-from-browser",
       "--no-exec", "--skip-download", "--dump-single-json", "--no-playlist"
     ]));
     expect(calls[1].args).not.toContain("--cookies");
     expect(calls[1].args).not.toContain("--netrc");
+    expect(calls[1].args).not.toContain("--no-netrc");
+    expect(calls[1].args).not.toContain("--netrc-location");
+    expect(calls[1].args).not.toContain("--netrc-cmd");
+    expect(calls[1].args).not.toContain("--max-downloads");
     expect(calls[1].args).not.toContain("--cookies-from-browser");
     expect(calls[1].args).not.toContain("--proxy-header");
     expect(calls[1].args.at(-1)).toBe("https://vimeo.example/123");
@@ -87,6 +112,48 @@ describe("controlled yt-dlp metadata runner", () => {
     await runner.checkVersion();
     await runner.checkVersion();
     expect(processRunner).toHaveBeenCalledOnce();
+  });
+
+  it("uses a fixed YouTube identity and Node runtime without cookies, plugins, or user arguments", async () => {
+    const temporaryRoot = await root();
+    const calls: BoundedProcessRunOptions[] = [];
+    let allowHostname: ((hostname: string) => boolean) | undefined;
+    const runner = createYtDlpMetadataRunner({
+      binaryPath: "/approved/yt-dlp",
+      nodeEnv: "production",
+      temporaryRoot,
+      processRunner: async (options) => {
+        calls.push(options);
+        return { stdout: calls.length === 1 ? "2026.07.04\n" : youtubeFixture(), stderr: "", stderrTruncated: false, durationMs: 1 };
+      },
+      guardFactory: async (options) => {
+        allowHostname = options.allowHostname;
+        return { proxyUrl: "http://127.0.0.1:41000", close: async () => undefined };
+      }
+    });
+    await runner.extract("youtube", new URL("https://www.youtube.com/watch?v=AbCdEfGhI_1"));
+    const args = calls[1]!.args;
+    expect(args).toEqual(expect.arrayContaining([
+      "--ignore-config", "--no-config-locations", "--no-plugin-dirs", "--no-remote-components",
+      "--no-js-runtimes", "--js-runtimes", `node:${process.execPath}`,
+      "--no-cookies", "--no-cookies-from-browser",
+      "--no-playlist", "--skip-download", "--no-check-formats", "--user-agent", YOUTUBE_PUBLIC_USER_AGENT,
+      "--use-extractors", "Youtube", "--", "https://www.youtube.com/watch?v=AbCdEfGhI_1"
+    ]));
+    expect(args.filter((value) => value === "--proxy")).toHaveLength(1);
+    expect(args.filter((value) => value === "--geo-verification-proxy")).toHaveLength(1);
+    expect(args).not.toContain("--cookies");
+    expect(args).not.toContain("--netrc");
+    expect(args).not.toContain("--no-netrc");
+    expect(args).not.toContain("--netrc-location");
+    expect(args).not.toContain("--netrc-cmd");
+    expect(args).not.toContain("--max-downloads");
+    expect(args).not.toContain("--cookies-from-browser");
+    expect(args.filter((value) => value === "--js-runtimes")).toHaveLength(1);
+    expect(args.indexOf("--no-js-runtimes")).toBeLessThan(args.indexOf("--js-runtimes"));
+    expect(allowHostname?.("youtube.com")).toBe(true);
+    expect(allowHostname?.("www.youtube.com")).toBe(true);
+    expect(allowHostname?.("googlevideo.com")).toBe(false);
   });
 
   it("fails closed on a version mismatch", async () => {
@@ -124,6 +191,8 @@ describe("controlled yt-dlp metadata runner", () => {
     ["This is a private video", API_ERROR_CODES.PRIVATE_CONTENT],
     ["This video is password protected", API_ERROR_CODES.PRIVATE_CONTENT],
     ["Login required; use --cookies", API_ERROR_CODES.LOGIN_REQUIRED],
+    ["This video is available to channel members only", API_ERROR_CODES.MEMBERS_ONLY],
+    ["This live stream has not started", API_ERROR_CODES.LIVE_NOT_SUPPORTED],
     ["This video is DRM protected", API_ERROR_CODES.DRM_PROTECTED],
     ["This video is not available in your country", API_ERROR_CODES.GEO_RESTRICTED],
     ["This video is age-restricted", API_ERROR_CODES.AGE_RESTRICTED],

@@ -1,15 +1,18 @@
 import type { VideoMetadata } from "@/lib/types";
+import type { ProcessingPreset } from "@/lib/ffmpeg/types";
 
 export type ExtractorContext = {
   signal?: AbortSignal;
   metadataTimeoutSeconds?: number;
   downloadTimeoutSeconds?: number;
   maxFileSizeBytes?: number;
+  maxDurationSeconds?: number;
   onDownloadProgress?: (downloadedBytes: number, totalBytes?: number) => void;
 };
 
 export type DownloadContext = ExtractorContext & {
   workDir: string;
+  processingPreset?: ProcessingPreset;
 };
 
 export type DownloadedSource = {

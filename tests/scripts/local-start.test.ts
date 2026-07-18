@@ -43,6 +43,26 @@ describe("personal-use local launcher", () => {
     });
   });
 
+  it("uses only supported isolation flags for the yt-dlp version preflight", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    await localStart.checkLocalRuntime({
+      nodeVersion: localStart.EXPECTED_NODE_VERSION,
+      npmVersion: localStart.EXPECTED_NPM_VERSION,
+      storagePath: await tempStorage(),
+      run(command: string, args: string[]) {
+        calls.push({ command, args });
+        return successfulTool(command, args);
+      }
+    });
+    const args = calls.find((call) => call.command === "yt-dlp")?.args ?? [];
+    expect(args).toContain("--ignore-config");
+    expect(args).toContain("--no-config-locations");
+    expect(args).toContain("--no-cookies");
+    expect(args).not.toContain("--netrc");
+    expect(args).not.toContain("--no-netrc");
+    expect(args.at(-1)).toBe("--version");
+  });
+
   it.each([
     ["Node.js", { nodeVersion: "0.0.0", npmVersion: localStart.EXPECTED_NPM_VERSION }],
     ["npm", { nodeVersion: localStart.EXPECTED_NODE_VERSION, npmVersion: "0.0.0" }]

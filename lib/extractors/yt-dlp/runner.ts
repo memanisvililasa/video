@@ -9,6 +9,7 @@ import {
   YT_DLP_METADATA_TIMEOUT_MS,
   YT_DLP_STDERR_MAX_BYTES,
   YT_DLP_STDOUT_MAX_BYTES,
+  YOUTUBE_PUBLIC_USER_AGENT,
   parseYtDlpVersionOutput,
   resolveYtDlpBinaryPath,
   type PlatformPageId
@@ -71,22 +72,24 @@ function versionArguments(): readonly string[] {
     "--no-remote-components",
     "--no-cookies",
     "--no-cookies-from-browser",
-    "--no-netrc",
     "--version"
   ]);
 }
 
 function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: URL): readonly string[] {
   const extractor = YT_DLP_EXTRACTOR_KEYS[platform][0];
+  const platformArguments = platform === "youtube"
+    ? ["--user-agent", YOUTUBE_PUBLIC_USER_AGENT]
+    : [];
   return Object.freeze([
     "--ignore-config",
     "--no-config-locations",
     "--no-plugin-dirs",
     "--no-remote-components",
     "--no-js-runtimes",
+    "--js-runtimes", `node:${process.execPath}`,
     "--no-cookies",
     "--no-cookies-from-browser",
-    "--no-netrc",
     "--no-cache-dir",
     "--no-download-archive",
     "--no-exec",
@@ -98,12 +101,12 @@ function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: 
     "--retries", "0",
     "--fragment-retries", "0",
     "--file-access-retries", "0",
-    "--max-downloads", "1",
     "--xff", "never",
     "--proxy", proxyUrl,
     "--geo-verification-proxy", proxyUrl,
     "--color", "never",
     "--no-progress",
+    ...platformArguments,
     "--use-extractors", extractor,
     "--",
     pageUrl.toString()
@@ -111,11 +114,16 @@ function metadataArguments(platform: PlatformPageId, proxyUrl: string, pageUrl: 
 }
 
 const VIMEO_METADATA_HOST_SUFFIXES = Object.freeze(["vimeo.com", "vimeocdn.com"]);
+const YOUTUBE_METADATA_HOST_SUFFIXES = Object.freeze(["youtube.com"]);
 
 function isAllowedMetadataHostname(platform: PlatformPageId, hostname: string): boolean {
   const normalized = hostname.toLowerCase().replace(/\.$/, "");
-  if (platform !== "vimeo") return false;
-  return VIMEO_METADATA_HOST_SUFFIXES.some((suffix) =>
+  const suffixes = platform === "vimeo"
+    ? VIMEO_METADATA_HOST_SUFFIXES
+    : platform === "youtube"
+      ? YOUTUBE_METADATA_HOST_SUFFIXES
+      : [];
+  return suffixes.some((suffix) =>
     normalized === suffix || normalized.endsWith(`.${suffix}`)
   );
 }
@@ -131,8 +139,14 @@ export function mapYtDlpProcessError(error: unknown): AppError {
     if (/private video|video is private|privacy settings/.test(stderr)) {
       return new AppError(API_ERROR_CODES.PRIVATE_CONTENT);
     }
+    if (/members[- ]only|channel members|premium[- ]only|paid content/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.MEMBERS_ONLY);
+    }
     if (/login required|sign in|log in|authentication required|use --cookies/.test(stderr)) {
       return new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
+    }
+    if (/live event|live stream|premiere/.test(stderr)) {
+      return new AppError(API_ERROR_CODES.LIVE_NOT_SUPPORTED);
     }
     if (/\bdrm\b|digital rights management/.test(stderr)) {
       return new AppError(API_ERROR_CODES.DRM_PROTECTED);

@@ -13,7 +13,7 @@ const productFiles = [
 ];
 
 describe("personal-use product truth", () => {
-  it("describes direct media and bounded public Vimeo support without stale claims", async () => {
+  it("describes direct media plus bounded Vimeo/YouTube support without stale claims", async () => {
     const content = (await Promise.all(productFiles.map((relative) =>
       readFile(path.join(process.cwd(), relative), "utf8")
     ))).join("\n");
@@ -25,9 +25,16 @@ describe("personal-use product truth", () => {
     expect(content).toMatch(/Vimeo/);
     expect(content).toMatch(/публичн(?:ые|ой) одиночн/i);
     expect(content).toMatch(/progressive HTTPS/i);
+    expect(content).toMatch(/YouTube/);
+    expect(content).toMatch(/Shorts/);
+    expect(content).toMatch(/watch-видео|watch URL/i);
+    expect(content).toMatch(/раздельные.*поток|video\/audio streams/i);
+    expect(content).toMatch(/playlist/i);
     expect(content).toMatch(/другие страницы платформ|другие page URL/i);
     expect(content).toMatch(/не поддерживаются|отклоняются/i);
     expect(content).not.toMatch(/поддерживаются все.*Vimeo|любые.*Vimeo/i);
+    expect(content).not.toMatch(/поддерживаются все.*YouTube|любые.*YouTube/i);
+    expect(content).not.toMatch(/YouTube, Reddit, TikTok.*не поддерживаются/i);
   });
 
   it("does not claim or configure Redis for the accepted local/single-host scope", async () => {

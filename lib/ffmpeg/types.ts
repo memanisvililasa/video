@@ -149,3 +149,19 @@ export type AudioExtractionResult = MediaProcessingResult<"audio-only"> & {
   channels?: number;
   threads: number;
 };
+
+export type MergeAudioVideoOptions = {
+  videoPath: string;
+  audioPath: string;
+  outputPath: string;
+  container: "mp4" | "webm";
+  signal?: AbortSignal;
+};
+
+export type MergeAudioVideoResult = {
+  outputPath: string;
+  sizeBytes: number;
+  videoInput: MediaProbeResult;
+  audioInput: MediaProbeResult;
+  output: MediaProbeResult;
+};

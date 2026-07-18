@@ -135,4 +135,34 @@ describe("base API operational events", () => {
     expect(rejected.status).toBe(400);
     expect(observed.events).toContainEqual(expect.objectContaining({ event: "job.file.rejected" }));
   });
+
+  it("delivers a Unicode #shorts filename through an ASCII-safe Content-Disposition", async () => {
+    const filename = "Синтетический YouTube #shorts.mp4";
+    const handler = createFileDeliveryRouteHandler({
+      getFile: async () => ({
+        fileId: "file_0123456789",
+        filename,
+        contentType: "video/mp4",
+        sizeBytes: 4,
+        expiresAt: "2026-07-15T01:00:00.000Z",
+        stream: Readable.from(Buffer.from("test")),
+        async close() {}
+      }),
+      checkRateLimit: () => allowed
+    });
+
+    const response = await handler(
+      new NextRequest("http://localhost/api/file/file_0123456789"),
+      { params: Promise.resolve({ id: "file_0123456789" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("video/mp4");
+    expect(response.headers.get("content-length")).toBe("4");
+    const disposition = response.headers.get("content-disposition") ?? "";
+    expect(disposition).toMatch(/^attachment; filename="[\x20-\x7e]+"; filename\*=UTF-8''/);
+    expect(disposition).toContain("#shorts.mp4");
+    expect(decodeURIComponent(disposition.split("filename*=UTF-8''")[1] ?? "")).toBe(filename);
+    expect(await response.text()).toBe("test");
+  });
 });

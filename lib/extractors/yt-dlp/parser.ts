@@ -1,6 +1,12 @@
 import { AppError } from "@/lib/errors";
 import { YT_DLP_EXTRACTOR_KEYS, type PlatformPageId } from "@/lib/extractors/yt-dlp/contract";
 import {
+  YOUTUBE_PUBLIC_ACCEPT,
+  YOUTUBE_PUBLIC_ACCEPT_LANGUAGE,
+  YOUTUBE_PUBLIC_SEC_FETCH_MODE,
+  YOUTUBE_PUBLIC_USER_AGENT
+} from "@/lib/extractors/yt-dlp/contract";
+import {
   buildPlatformFormatStrategies,
   type DirectMediaReference,
   type PlatformFormatStrategy
@@ -61,10 +67,15 @@ function assertJsonDepth(value: string): void {
   if (inString || depth !== 0) throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
 }
 
-function mapAvailability(value: unknown): void {
+function mapAvailability(value: unknown, platform: PlatformPageId): void {
   if (value === "private") throw new AppError(API_ERROR_CODES.PRIVATE_CONTENT);
-  if (value === "needs_auth" || value === "subscriber_only") throw new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
-  if (value === "premium_only") throw new AppError(API_ERROR_CODES.PROTECTED_CONTENT);
+  if (value === "needs_auth") throw new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
+  if (value === "subscriber_only") {
+    throw new AppError(platform === "youtube" ? API_ERROR_CODES.MEMBERS_ONLY : API_ERROR_CODES.LOGIN_REQUIRED);
+  }
+  if (value === "premium_only") {
+    throw new AppError(platform === "youtube" ? API_ERROR_CODES.MEMBERS_ONLY : API_ERROR_CODES.PROTECTED_CONTENT);
+  }
   if (value !== undefined && value !== null && value !== "public") throw new AppError(API_ERROR_CODES.CONTENT_UNAVAILABLE);
 }
 
@@ -80,11 +91,41 @@ function parseDirectUrl(value: unknown): URL | null {
   return url;
 }
 
-function parseFormat(value: unknown): DirectMediaReference | null {
+function parseYouTubeRequestProfile(value: unknown): "youtube-public-v1" | null {
+  if (value === undefined) return "youtube-public-v1";
+  if (!record(value)) return null;
+  const expected = new Map([
+    ["accept", YOUTUBE_PUBLIC_ACCEPT],
+    ["accept-language", YOUTUBE_PUBLIC_ACCEPT_LANGUAGE],
+    ["sec-fetch-mode", YOUTUBE_PUBLIC_SEC_FETCH_MODE],
+    ["user-agent", YOUTUBE_PUBLIC_USER_AGENT]
+  ]);
+  for (const [rawKey, rawValue] of Object.entries(value)) {
+    const key = rawKey.toLowerCase();
+    if (!expected.has(key) || typeof rawValue !== "string") return null;
+    const normalized = boundedString(rawValue, 1_024);
+    if (!normalized || normalized.toLowerCase() !== expected.get(key)!.toLowerCase()) return null;
+  }
+  return "youtube-public-v1";
+}
+
+function parseDynamicRange(value: unknown, formatNote: string | undefined): "sdr" | "hdr" | "unknown" {
+  const normalized = `${typeof value === "string" ? value : ""} ${formatNote ?? ""}`.toLowerCase();
+  if (/\b(?:hdr|hlg|pq|dolby vision)\b/.test(normalized)) return "hdr";
+  if (/\bsdr\b/.test(normalized)) return "sdr";
+  return "unknown";
+}
+
+function parseFormat(value: unknown, platform: PlatformPageId): DirectMediaReference | null {
   if (!record(value)) return null;
   if (Array.isArray(value.fragments) && value.fragments.length > 0) return null;
   if (value.has_drm === true || value.cookies !== undefined) return null;
-  if (record(value.http_headers) && Object.keys(value.http_headers).length > 0) return null;
+  const requestProfile = platform === "youtube"
+    ? parseYouTubeRequestProfile(value.http_headers)
+    : record(value.http_headers) && Object.keys(value.http_headers).length > 0
+      ? null
+      : undefined;
+  if (requestProfile === null) return null;
   const protocol = boundedString(value.protocol, 32);
   if (protocol !== "https") return null;
   const url = parseDirectUrl(value.url);
@@ -96,6 +137,7 @@ function parseFormat(value: unknown): DirectMediaReference | null {
   const hasVideo = Boolean(videoCodec && videoCodec !== "none");
   const hasAudio = Boolean(audioCodec && audioCodec !== "none");
   if (!hasVideo && !hasAudio) return null;
+  const formatNote = boundedString(value.format_note, 256);
   return Object.freeze({
     url,
     formatId,
@@ -109,7 +151,12 @@ function parseFormat(value: unknown): DirectMediaReference | null {
     filesizeBytes: finiteNumber(value.filesize, 0),
     filesizeEstimateBytes: finiteNumber(value.filesize_approx, 0),
     hasVideo,
-    hasAudio
+    hasAudio,
+    requestProfile,
+    dynamicRange: parseDynamicRange(value.dynamic_range, formatNote),
+    languagePreference: finiteNumber(value.language_preference, -1_000, 1_000),
+    audioChannels: finiteNumber(value.audio_channels, 1, 32),
+    drc: /(?:^|[-, ])drc(?:$|[-, ])/i.test(`${formatId} ${formatNote ?? ""}`)
   });
 }
 
@@ -124,14 +171,14 @@ export function parseYtDlpMetadataJson(
   let parsed: unknown;
   try { parsed = JSON.parse(value); } catch { throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED); }
   if (!record(parsed) || parsed._type === "playlist" || Array.isArray(parsed.entries)) {
-    throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
+    throw new AppError(platform === "youtube" ? API_ERROR_CODES.PLAYLIST_NOT_SUPPORTED : API_ERROR_CODES.UNSUPPORTED_URL);
   }
   if (parsed.is_live === true || parsed.live_status && parsed.live_status !== "not_live") {
-    throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
+    throw new AppError(platform === "youtube" ? API_ERROR_CODES.LIVE_NOT_SUPPORTED : API_ERROR_CODES.UNSUPPORTED_URL);
   }
   if (parsed.has_drm === true) throw new AppError(API_ERROR_CODES.DRM_PROTECTED);
   if ((finiteNumber(parsed.age_limit, 0, 1_000) ?? 0) > 0) throw new AppError(API_ERROR_CODES.AGE_RESTRICTED);
-  mapAvailability(parsed.availability);
+  mapAvailability(parsed.availability, platform);
 
   const extractorKey = boundedString(parsed.extractor_key, 128);
   if (!extractorKey || !YT_DLP_EXTRACTOR_KEYS[platform].includes(extractorKey)) {
@@ -143,7 +190,7 @@ export function parseYtDlpMetadataJson(
   if (!Array.isArray(parsed.formats) || parsed.formats.length > MAX_FORMATS) {
     throw new AppError(API_ERROR_CODES.EXTRACTOR_FAILED);
   }
-  const references = parsed.formats.map(parseFormat).filter((format): format is DirectMediaReference => format !== null);
+  const references = parsed.formats.map((format) => parseFormat(format, platform)).filter((format): format is DirectMediaReference => format !== null);
   const strategies = buildPlatformFormatStrategies(platform, references);
   if (strategies.length === 0) throw new AppError(API_ERROR_CODES.NO_SUPPORTED_FORMAT);
   return Object.freeze({

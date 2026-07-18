@@ -1,7 +1,7 @@
 import { env } from "@/lib/config/env";
 import { AppError } from "@/lib/errors";
 import type { Extractor } from "@/lib/extractors/types";
-import { canonicalizeVimeoSourceInput } from "@/lib/extractors/vimeo-url";
+import { canonicalizePlatformSourceInput } from "@/lib/extractors/platform-url";
 import { requireExtractor } from "@/lib/extractors/registry";
 import { extractAudioToM4a } from "@/lib/ffmpeg/audio";
 import { convertMediaToCompatibleMp4 } from "@/lib/ffmpeg/convert";
@@ -143,7 +143,7 @@ export function createDownloadOrchestrationService(
     if (!initialValidation.ok) {
       throw new AppError(initialValidation.code, initialValidation.message);
     }
-    const canonicalUrl = canonicalizeVimeoSourceInput(request.url, initialValidation.url);
+    const canonicalUrl = canonicalizePlatformSourceInput(request.url, initialValidation.url);
     const trustedRequest = Object.freeze({
       url: canonicalUrl.toString(),
       formatId: request.formatId,
@@ -174,14 +174,19 @@ export function createDownloadOrchestrationService(
           const metadata = await extractor.extract(url, {
             signal,
             metadataTimeoutSeconds: dependencies.metadataTimeoutSeconds,
-            maxFileSizeBytes: dependencies.maxFileSizeBytes
+            maxFileSizeBytes: dependencies.maxFileSizeBytes,
+            maxDurationSeconds: dependencies.maxDurationSeconds
           });
           assertNotAborted(signal);
           const selectedFormat = metadata.formats.find((format) => format.id === trustedRequest.formatId);
           if (!selectedFormat) {
             throw new AppError(
-              extractor.id === "vimeo" ? API_ERROR_CODES.SOURCE_EXPIRED : API_ERROR_CODES.UNSUPPORTED_URL,
-              extractor.id === "vimeo" ? undefined : "Запрошенный формат недоступен для этой ссылки."
+              extractor.id === "vimeo" || extractor.id === "youtube"
+                ? API_ERROR_CODES.SOURCE_EXPIRED
+                : API_ERROR_CODES.UNSUPPORTED_URL,
+              extractor.id === "vimeo" || extractor.id === "youtube"
+                ? undefined
+                : "Запрошенный формат недоступен для этой ссылки."
             );
           }
           updateProgress(15);
@@ -198,6 +203,8 @@ export function createDownloadOrchestrationService(
             metadataTimeoutSeconds: dependencies.metadataTimeoutSeconds,
             downloadTimeoutSeconds: dependencies.downloadTimeoutSeconds,
             maxFileSizeBytes: dependencies.maxFileSizeBytes,
+            maxDurationSeconds: dependencies.maxDurationSeconds,
+            processingPreset: trustedRequest.processingPreset,
             onDownloadProgress(downloadedBytes, totalBytes) {
               if (
                 typeof totalBytes !== "number" ||

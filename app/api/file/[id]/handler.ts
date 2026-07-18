@@ -24,6 +24,25 @@ function isValidFileId(id: string): boolean {
   return /^[a-zA-Z0-9_-]{8,128}$/.test(id);
 }
 
+function wellFormedFilename(filename: string): string {
+  return Array.from(filename, (character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && codePoint >= 0xd800 && codePoint <= 0xdfff ? "_" : character;
+  }).join("");
+}
+
+function contentDisposition(filename: string): string {
+  const normalized = wellFormedFilename(filename).replace(/[\u0000-\u001f\u007f]/g, "_");
+  const fallback = normalized
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/["\\]/g, "_") || "download";
+  if (!/[^\x20-\x7e]/.test(normalized)) return `attachment; filename="${fallback}"`;
+  const encoded = encodeURIComponent(normalized).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
 export function createFileDeliveryRouteHandler(dependencies: FileDeliveryRouteDependencies) {
   const rateLimit = dependencies.checkRateLimit ?? checkRateLimit;
   const observability = dependencies.observability ?? NOOP_HTTP_OBSERVABILITY;
@@ -67,7 +86,7 @@ export function createFileDeliveryRouteHandler(dependencies: FileDeliveryRouteDe
           headers: {
             "Content-Type": file.contentType,
             "Content-Length": String(file.sizeBytes),
-            "Content-Disposition": `attachment; filename="${file.filename.replace(/["\\]/g, "_")}"`,
+            "Content-Disposition": contentDisposition(file.filename),
             "Cache-Control": "private, max-age=0, no-store",
             "X-Content-Type-Options": "nosniff"
           }

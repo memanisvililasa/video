@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { API_ERROR_CODES, API_ERROR_STATUS, createApiErrorResponse, createApiSuccessResponse, getApiErrorStatus, toApiErrorResponse } from "@/lib/errors";
 import { requireExtractor } from "@/lib/extractors/registry";
-import { canonicalizeVimeoSourceInput } from "@/lib/extractors/vimeo-url";
+import { canonicalizePlatformSourceInput } from "@/lib/extractors/platform-url";
 import { checkRateLimit } from "@/lib/security/rate-limit";
 import { validateVideoUrl } from "@/lib/security/url-validation";
 import type { ApiErrorCode, ExtractRequest, ExtractResponse } from "@/lib/types";
@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
       return errorResponse(validation.code, validation.message);
     }
 
-    const sourceUrl = canonicalizeVimeoSourceInput(bodyResult.body.url, validation.url);
+    const sourceUrl = canonicalizePlatformSourceInput(bodyResult.body.url, validation.url);
     const extractor = requireExtractor(sourceUrl);
     const metadata = await extractor.extract(sourceUrl, { signal: request.signal });
 

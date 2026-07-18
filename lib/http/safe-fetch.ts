@@ -9,6 +9,12 @@ import { isIP } from "node:net";
 import { AppError } from "@/lib/errors";
 import { API_ERROR_CODES } from "@/lib/types";
 import { validateOutboundHostname, validateRedirectHostname } from "@/lib/security/ssrf";
+import {
+  YOUTUBE_PUBLIC_ACCEPT,
+  YOUTUBE_PUBLIC_ACCEPT_LANGUAGE,
+  YOUTUBE_PUBLIC_SEC_FETCH_MODE,
+  YOUTUBE_PUBLIC_USER_AGENT
+} from "@/lib/extractors/yt-dlp/contract";
 
 const DEFAULT_METADATA_TIMEOUT_SECONDS = 10;
 const DEFAULT_DOWNLOAD_TIMEOUT_SECONDS = 120;
@@ -22,6 +28,8 @@ export type SafeFetchOptions = {
   timeoutSeconds?: number;
   maxRedirects?: number;
   requireHttps?: boolean;
+  requestProfile?: "default" | "youtube-public-v1";
+  allowHostname?: (hostname: string) => boolean;
   signal?: AbortSignal;
 };
 
@@ -62,7 +70,12 @@ type RequestLookupCallback = (error: NodeJS.ErrnoException | null, address: stri
 type SafeLookupAddress = Readonly<{ address: string; family: number }>;
 type SafeAddressLookup = (hostname: string) => Promise<readonly SafeLookupAddress[]>;
 
-function assertSafeUrl(url: URL, redirect = false, requireHttps = false): URL {
+function assertSafeUrl(
+  url: URL,
+  redirect = false,
+  requireHttps = false,
+  allowHostname: (hostname: string) => boolean = () => true
+): URL {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new AppError(API_ERROR_CODES.INVALID_URL, "Разрешены только HTTP(S)-ссылки.", 400);
   }
@@ -81,6 +94,9 @@ function assertSafeUrl(url: URL, redirect = false, requireHttps = false): URL {
   }
 
   url.hostname = safety.hostname;
+  if (!allowHostname(url.hostname)) {
+    throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник нарушил platform egress policy.", 502);
+  }
 
   return url;
 }
@@ -168,7 +184,12 @@ export async function resolveSafeAddress(
   return canonicalAddresses[0];
 }
 
-export function getRedirectTarget(currentUrl: URL, location: string | undefined, requireHttps = false): URL {
+export function getRedirectTarget(
+  currentUrl: URL,
+  location: string | undefined,
+  requireHttps = false,
+  allowHostname: (hostname: string) => boolean = () => true
+): URL {
   if (!location) {
     throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул redirect без Location.", 502);
   }
@@ -181,7 +202,7 @@ export function getRedirectTarget(currentUrl: URL, location: string | undefined,
   }
 
   target.hash = "";
-  return assertSafeUrl(target, true, requireHttps);
+  return assertSafeUrl(target, true, requireHttps, allowHostname);
 }
 
 function createAbortError(): AppError {
@@ -189,7 +210,7 @@ function createAbortError(): AppError {
 }
 
 async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders, options: Required<SafeFetchOptions>): Promise<RequestResult> {
-  assertSafeUrl(url, false, options.requireHttps);
+  assertSafeUrl(url, false, options.requireHttps, options.allowHostname);
   const resolved = await resolveSafeAddress(url.hostname, options.timeoutSeconds, options.signal);
 
   return new Promise<RequestResult>((resolve, reject) => {
@@ -204,8 +225,11 @@ async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders
       {
         method,
         headers: {
-          "User-Agent": USER_AGENT,
-          Accept: "*/*",
+          "User-Agent": options.requestProfile === "youtube-public-v1" ? YOUTUBE_PUBLIC_USER_AGENT : USER_AGENT,
+          Accept: options.requestProfile === "youtube-public-v1" ? YOUTUBE_PUBLIC_ACCEPT : "*/*",
+          ...(options.requestProfile === "youtube-public-v1"
+            ? { "Accept-Language": YOUTUBE_PUBLIC_ACCEPT_LANGUAGE, "Sec-Fetch-Mode": YOUTUBE_PUBLIC_SEC_FETCH_MODE }
+            : {}),
           Connection: "close",
           ...headers
         },
@@ -268,10 +292,17 @@ async function requestWithRedirects(
     timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
     maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
     requireHttps: options.requireHttps ?? false,
+    requestProfile: options.requestProfile ?? "default",
+    allowHostname: options.allowHostname ?? (() => true),
     signal: options.signal ?? new AbortController().signal
   };
 
-  let currentUrl = assertSafeUrl(new URL(initialUrl.toString()), false, requestOptions.requireHttps);
+  let currentUrl = assertSafeUrl(
+    new URL(initialUrl.toString()),
+    false,
+    requestOptions.requireHttps,
+    requestOptions.allowHostname
+  );
   for (let redirectCount = 0; redirectCount <= requestOptions.maxRedirects; redirectCount += 1) {
     const result = await requestOnce(currentUrl, method, headers, requestOptions);
 
@@ -284,7 +315,12 @@ async function requestWithRedirects(
       throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
     }
 
-    currentUrl = getRedirectTarget(currentUrl, result.headers.location, requestOptions.requireHttps);
+    currentUrl = getRedirectTarget(
+      currentUrl,
+      result.headers.location,
+      requestOptions.requireHttps,
+      requestOptions.allowHostname
+    );
   }
 
   throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
@@ -300,9 +336,8 @@ function assertReadableStatus(result: SafeResponseMetadata): void {
 
 export async function safeHead(url: URL, options: SafeFetchOptions = {}): Promise<SafeResponseMetadata> {
   const result = await requestWithRedirects(url, "HEAD", {}, {
+    ...options,
     timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
-    maxRedirects: options.maxRedirects,
-    signal: options.signal
   });
   result.stream?.destroy();
   assertReadableStatus(result);
@@ -311,9 +346,8 @@ export async function safeHead(url: URL, options: SafeFetchOptions = {}): Promis
 
 export async function safeGetMetadata(url: URL, options: SafeFetchOptions = {}): Promise<SafeResponseMetadata> {
   const result = await requestWithRedirects(url, "GET", { Range: "bytes=0-0" }, {
+    ...options,
     timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
-    maxRedirects: options.maxRedirects,
-    signal: options.signal
   });
   result.stream?.destroy();
   assertReadableStatus(result);
@@ -331,6 +365,9 @@ export function createSafeFileDownloader(dependencies: SafeFileDownloaderDepende
     const result = await dependencies.requestDownload(url, {
       timeoutSeconds: options.timeoutSeconds ?? DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
       maxRedirects: options.maxRedirects,
+      requireHttps: options.requireHttps,
+      requestProfile: options.requestProfile,
+      allowHostname: options.allowHostname,
       signal
     });
 

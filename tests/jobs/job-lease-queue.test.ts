@@ -34,6 +34,33 @@ describe("durable media job payload", () => {
   });
 
   it.each([
+    "https://youtube.com/watch?v=AbCdEfGhI_1&si=tracking",
+    "https://www.youtube.com/shorts/AbCdEfGhI_1?feature=share",
+    "https://m.youtube.com/watch?v=AbCdEfGhI_1&t=12",
+    "https://youtu.be/AbCdEfGhI_1"
+  ])("stores only the canonical YouTube video identity for %s", (sourceUrl) => {
+    expect(sanitizeMediaJobWorkItem({
+      sourceUrl,
+      formatId: "pf_0123456789abcdefghijklmnopqrstuvwxyzABCDE",
+      processingPreset: "compatible-mp4"
+    }).sourceUrl).toBe("https://www.youtube.com/watch?v=AbCdEfGhI_1");
+  });
+
+  it.each([
+    "http://youtube.com/watch?v=AbCdEfGhI_1",
+    "https://youtube.com/watch?v=AbCdEfGhI_1&list=PLfixture",
+    "https://youtube.com/watch?v=short",
+    "https://youtube.com/live/AbCdEfGhI_1",
+    "https://youtube.com/shorts/AbCdEfGhI_1#fragment"
+  ])("rejects an out-of-scope YouTube durable identity: %s", (sourceUrl) => {
+    expect(() => sanitizeMediaJobWorkItem({
+      sourceUrl,
+      formatId: "best",
+      processingPreset: "original"
+    })).toThrow();
+  });
+
+  it.each([
     "http://vimeo.com/123456789",
     "https://vimeo.com/123456789?token=secret",
     "https://vimeo.com/showcase/123456789",

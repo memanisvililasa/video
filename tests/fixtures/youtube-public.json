@@ -1,0 +1,111 @@
+{
+  "_type": "video",
+  "extractor_key": "Youtube",
+  "id": "AbCdEfGhI_1",
+  "title": "Deterministic YouTube fixture",
+  "duration": 1,
+  "availability": "public",
+  "live_status": "not_live",
+  "age_limit": 0,
+  "formats": [
+    {
+      "format_id": "18",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=progressive",
+      "ext": "mp4",
+      "vcodec": "avc1.42001E",
+      "acodec": "mp4a.40.2",
+      "width": 640,
+      "height": 360,
+      "fps": 30,
+      "tbr": 800,
+      "filesize": 400000,
+      "dynamic_range": "SDR"
+    },
+    {
+      "format_id": "135",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=480-video",
+      "ext": "mp4",
+      "vcodec": "avc1.4D401E",
+      "acodec": "none",
+      "width": 854,
+      "height": 480,
+      "fps": 30,
+      "tbr": 1000,
+      "filesize": 500000,
+      "dynamic_range": "SDR"
+    },
+    {
+      "format_id": "136",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=720-video",
+      "ext": "mp4",
+      "vcodec": "avc1.4D401F",
+      "acodec": "none",
+      "width": 1280,
+      "height": 720,
+      "fps": 30,
+      "tbr": 1800,
+      "filesize": 700000,
+      "dynamic_range": "SDR"
+    },
+    {
+      "format_id": "137",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=1080-video",
+      "ext": "mp4",
+      "vcodec": "avc1.640028",
+      "acodec": "none",
+      "width": 1920,
+      "height": 1080,
+      "fps": 30,
+      "tbr": 2800,
+      "filesize": 900000,
+      "dynamic_range": "SDR"
+    },
+    {
+      "format_id": "140",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=audio",
+      "ext": "m4a",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "tbr": 128,
+      "filesize": 100000,
+      "audio_channels": 2,
+      "language_preference": 1
+    },
+    {
+      "format_id": "140-drc",
+      "format_note": "DRC",
+      "protocol": "https",
+      "url": "https://r1---sn-fixture.googlevideo.com/videoplayback?fixture=drc-audio",
+      "ext": "m4a",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "tbr": 160,
+      "filesize": 100000,
+      "audio_channels": 2,
+      "language_preference": 1
+    },
+    {
+      "format_id": "hls-720",
+      "protocol": "m3u8_native",
+      "url": "https://manifest.googlevideo.com/api/manifest/hls_variant/fixture",
+      "ext": "mp4",
+      "vcodec": "avc1.4D401F",
+      "acodec": "mp4a.40.2",
+      "width": 1280,
+      "height": 720
+    },
+    {
+      "format_id": "storyboard",
+      "protocol": "https",
+      "url": "https://i.ytimg.com/sb/fixture/storyboard.jpg",
+      "ext": "mhtml",
+      "vcodec": "none",
+      "acodec": "none"
+    }
+  ]
+}

@@ -236,13 +236,16 @@ export function createMediaWorkerProcessor(
       const extracted = await extractor.extract(validation.url, {
         signal: session.signal,
         metadataTimeoutSeconds: config.metadataTimeoutSeconds,
-        maxFileSizeBytes: config.maxFileSizeBytes
+        maxFileSizeBytes: config.maxFileSizeBytes,
+        maxDurationSeconds: config.maxDurationSeconds
       });
       session.assertActive();
       const selected = extracted.formats.find((format) => format.id === payload.formatId);
       if (!selected) {
         throw new AppError(
-          extractor.id === "vimeo" ? API_ERROR_CODES.SOURCE_EXPIRED : API_ERROR_CODES.UNSUPPORTED_URL
+          extractor.id === "vimeo" || extractor.id === "youtube"
+            ? API_ERROR_CODES.SOURCE_EXPIRED
+            : API_ERROR_CODES.UNSUPPORTED_URL
         );
       }
       const inputExtension = sourceExtension(selected.ext);
@@ -270,6 +273,8 @@ export function createMediaWorkerProcessor(
           metadataTimeoutSeconds: config.metadataTimeoutSeconds,
           downloadTimeoutSeconds: config.downloadTimeoutSeconds,
           maxFileSizeBytes: config.maxFileSizeBytes,
+          maxDurationSeconds: config.maxDurationSeconds,
+          processingPreset: payload.processingPreset,
           onDownloadProgress(downloadedBytes, totalBytes) {
             if (!Number.isSafeInteger(totalBytes) || (totalBytes as number) <= 0 || (totalBytes as number) > config.maxFileSizeBytes) return;
             const ratio = Math.min(1, Math.max(0, downloadedBytes / (totalBytes as number)));

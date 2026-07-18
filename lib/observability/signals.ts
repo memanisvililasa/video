@@ -135,12 +135,19 @@ export function stageReason(stage: ObservedMediaStage): OperationalReasonCode {
 export function jobErrorCategory(code: ApiErrorCode | undefined): OperationalErrorCategory {
   if (!code) return "internal";
   if (code === API_ERROR_CODES.PRIVATE_OR_LOCAL_URL) return "ssrf";
-  if (code === API_ERROR_CODES.DOWNLOAD_FAILED || code === API_ERROR_CODES.EXTRACTION_FAILED) return "download";
+  if (
+    code === API_ERROR_CODES.DOWNLOAD_FAILED ||
+    code === API_ERROR_CODES.EXTRACTION_FAILED ||
+    code === API_ERROR_CODES.EXTRACTOR_FAILED ||
+    code === API_ERROR_CODES.EXTRACTOR_TIMEOUT ||
+    code === API_ERROR_CODES.SOURCE_EXPIRED
+  ) return "download";
   if (code === API_ERROR_CODES.FFPROBE_FAILED || code === API_ERROR_CODES.INVALID_MEDIA_FILE) return "probe";
   if (code === API_ERROR_CODES.PROCESSING_TIMEOUT) return "timeout";
   if (code === API_ERROR_CODES.JOB_CANCELLED) return "cancellation";
   if (
     code === API_ERROR_CODES.FFMPEG_NOT_AVAILABLE ||
+    code === API_ERROR_CODES.MERGE_FAILED ||
     code === API_ERROR_CODES.UNSUPPORTED_CODEC ||
     code === API_ERROR_CODES.AUDIO_STREAM_NOT_FOUND ||
     code === API_ERROR_CODES.PROCESSING_FAILED
@@ -153,6 +160,17 @@ export function jobErrorCategory(code: ApiErrorCode | undefined): OperationalErr
     code === API_ERROR_CODES.INVALID_FORMAT ||
     code === API_ERROR_CODES.INVALID_URL ||
     code === API_ERROR_CODES.UNSUPPORTED_URL ||
+    code === API_ERROR_CODES.UNSUPPORTED_PLATFORM ||
+    code === API_ERROR_CODES.CONTENT_UNAVAILABLE ||
+    code === API_ERROR_CODES.LOGIN_REQUIRED ||
+    code === API_ERROR_CODES.PRIVATE_CONTENT ||
+    code === API_ERROR_CODES.MEMBERS_ONLY ||
+    code === API_ERROR_CODES.DRM_PROTECTED ||
+    code === API_ERROR_CODES.GEO_RESTRICTED ||
+    code === API_ERROR_CODES.AGE_RESTRICTED ||
+    code === API_ERROR_CODES.LIVE_NOT_SUPPORTED ||
+    code === API_ERROR_CODES.PLAYLIST_NOT_SUPPORTED ||
+    code === API_ERROR_CODES.NO_SUPPORTED_FORMAT ||
     code === API_ERROR_CODES.AUTH_REQUIRED ||
     code === API_ERROR_CODES.PROTECTED_CONTENT ||
     code === API_ERROR_CODES.FILE_TOO_LARGE ||

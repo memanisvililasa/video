@@ -15,6 +15,11 @@ export type DirectMediaReference = Readonly<{
   filesizeEstimateBytes?: number;
   hasVideo: boolean;
   hasAudio: boolean;
+  requestProfile?: "youtube-public-v1";
+  dynamicRange?: "sdr" | "hdr" | "unknown";
+  languagePreference?: number;
+  audioChannels?: number;
+  drc?: boolean;
 }>;
 
 export type PlatformFormatStrategy = Readonly<{
@@ -32,11 +37,14 @@ export type PlatformFormatStrategy = Readonly<{
   filesizeEstimateBytes?: number;
   hasVideo: true;
   hasAudio: boolean;
+  qualityTier?: 360 | 480 | 720 | 1080;
+  dynamicRange?: "sdr" | "hdr" | "unknown";
   transport: "progressive-direct" | "separate-direct";
   selectedDownloadStrategy: "single-file" | "download-and-stream-copy-merge";
   progressiveSource?: DirectMediaReference;
   videoSource?: DirectMediaReference;
   audioSource?: DirectMediaReference;
+  audioOnlySource?: DirectMediaReference;
 }>;
 
 function stableId(platform: PlatformPageId, signature: Readonly<Record<string, unknown>>): string {
@@ -56,6 +64,23 @@ function mergedContainer(video: DirectMediaReference, audio: DirectMediaReferenc
   if ((video.container === "mp4" || video.container === "mov") && (audio.container === "m4a" || audio.container === "mp4")) return "mp4";
   if (video.container === "webm" && audio.container === "webm") return "webm";
   return null;
+}
+
+function bestCompatibleAudio(
+  video: DirectMediaReference,
+  references: readonly DirectMediaReference[]
+): DirectMediaReference | undefined {
+  return references
+    .filter((source) => !source.hasVideo && source.hasAudio && mergedContainer(video, source) !== null)
+    .sort((left, right) => {
+      const drc = Number(Boolean(left.drc)) - Number(Boolean(right.drc));
+      if (drc !== 0) return drc;
+      const language = (right.languagePreference ?? -1_000) - (left.languagePreference ?? -1_000);
+      if (language !== 0) return language;
+      const bitrate = (right.bitrate ?? 0) - (left.bitrate ?? 0);
+      if (bitrate !== 0) return bitrate;
+      return left.formatId.localeCompare(right.formatId, "en");
+    })[0];
 }
 
 function signatureFor(reference: DirectMediaReference): Readonly<Record<string, unknown>> {
@@ -99,18 +124,17 @@ export function buildPlatformFormatStrategies(
         filesizeEstimateBytes: source.filesizeEstimateBytes,
         hasVideo: true,
         hasAudio: true,
+        dynamicRange: source.dynamicRange,
         transport: "progressive-direct",
         selectedDownloadStrategy: "single-file",
-        progressiveSource: source
+        progressiveSource: source,
+        audioOnlySource: bestCompatibleAudio(source, references) ?? source
       }));
     }
   }
 
-  const audioReferences = references
-    .filter((source) => !source.hasVideo && source.hasAudio)
-    .sort((left, right) => (right.bitrate ?? 0) - (left.bitrate ?? 0));
   for (const video of references.filter((source) => source.hasVideo && !source.hasAudio)) {
-    const audio = audioReferences.find((candidate) => mergedContainer(video, candidate) !== null);
+    const audio = bestCompatibleAudio(video, references);
     if (!audio) continue;
     const container = mergedContainer(video, audio);
     if (!container) continue;
@@ -134,10 +158,12 @@ export function buildPlatformFormatStrategies(
       filesizeEstimateBytes: estimatedVideo !== undefined && estimatedAudio !== undefined ? estimatedVideo + estimatedAudio : undefined,
       hasVideo: true,
       hasAudio: true,
+      dynamicRange: video.dynamicRange,
       transport: "separate-direct",
       selectedDownloadStrategy: "download-and-stream-copy-merge",
       videoSource: video,
-      audioSource: audio
+      audioSource: audio,
+      audioOnlySource: audio
     }));
   }
 

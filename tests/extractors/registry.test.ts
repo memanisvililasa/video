@@ -12,7 +12,6 @@ describe("personal-use extractor registry", () => {
   });
 
   it.each([
-    ["youtube", "https://www.youtube.com/watch?v=public"],
     ["tiktok", "https://www.tiktok.com/@creator/video/1"],
     ["instagram", "https://www.instagram.com/reel/public"],
     ["facebook", "https://www.facebook.com/watch/?v=1"],
@@ -25,6 +24,26 @@ describe("personal-use extractor registry", () => {
       code: "UNSUPPORTED_URL",
       status: 400
     });
+  });
+
+  it.each([
+    "https://youtube.com/watch?v=AbCdEfGhI_1",
+    "https://www.youtube.com/shorts/AbCdEfGhI_1",
+    "https://m.youtube.com/watch?v=AbCdEfGhI_1",
+    "https://youtu.be/AbCdEfGhI_1"
+  ])("enables only the strict YouTube single-video extractor for %s", (value) => {
+    expect(requireExtractor(new URL(value)).id).toBe("youtube");
+  });
+
+  it.each([
+    "http://youtube.com/watch?v=AbCdEfGhI_1",
+    "https://youtube.com/watch?v=short",
+    "https://youtube.com/watch?v=AbCdEfGhI_1&list=PLfixture",
+    "https://youtube.com/channel/UCfixture",
+    "https://youtube.com/live/AbCdEfGhI_1",
+    "https://youtube-nocookie.com/embed/AbCdEfGhI_1"
+  ])("does not classify out-of-scope YouTube pages: %s", (value) => {
+    expect(findExtractor(new URL(value))).toBeUndefined();
   });
 
   it.each([

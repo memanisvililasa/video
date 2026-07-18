@@ -9,6 +9,10 @@ export const YT_DLP_STDOUT_MAX_BYTES = 8 * 1024 * 1024;
 export const YT_DLP_STDERR_MAX_BYTES = 64 * 1024;
 export const YT_DLP_METADATA_TIMEOUT_MS = 30_000;
 export const YT_DLP_KILL_GRACE_MS = 2_000;
+export const YOUTUBE_PUBLIC_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36";
+export const YOUTUBE_PUBLIC_ACCEPT = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+export const YOUTUBE_PUBLIC_ACCEPT_LANGUAGE = "en-us,en;q=0.5";
+export const YOUTUBE_PUBLIC_SEC_FETCH_MODE = "navigate";
 
 export type PlatformPageId =
   | "vimeo"

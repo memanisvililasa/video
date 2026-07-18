@@ -67,6 +67,22 @@ describe("safe-fetch redirect policy", () => {
     );
   });
 
+  it("keeps redirects inside the fixed YouTube media hostname boundary", () => {
+    const allowGoogleVideo = (hostname: string) => hostname.endsWith(".googlevideo.com");
+    expect(getRedirectTarget(
+      new URL("https://r1.googlevideo.com/videoplayback"),
+      "https://r2.googlevideo.com/videoplayback",
+      true,
+      allowGoogleVideo
+    ).hostname).toBe("r2.googlevideo.com");
+    expect(() => getRedirectTarget(
+      new URL("https://r1.googlevideo.com/videoplayback"),
+      "https://public.example/videoplayback",
+      true,
+      allowGoogleVideo
+    )).toThrowError(expect.objectContaining({ code: API_ERROR_CODES.DOWNLOAD_FAILED }));
+  });
+
   it.each(["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1"])(
     "rejects a redirect literal to mapped unsafe IPv4: %s",
     (address) => expect(() => getRedirectTarget(initial, `https://[${address}]/fixture.mp4`)).toThrow(AppError)

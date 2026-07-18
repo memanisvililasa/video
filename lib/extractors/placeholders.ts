@@ -9,7 +9,6 @@ type PlatformPlaceholder = {
 };
 
 const platforms: readonly PlatformPlaceholder[] = [
-  { id: "youtube", name: "YouTube", domains: ["youtube.com", "youtu.be", "youtube-nocookie.com"] },
   { id: "tiktok", name: "TikTok", domains: ["tiktok.com"] },
   { id: "instagram", name: "Instagram", domains: ["instagram.com"] },
   { id: "facebook", name: "Facebook", domains: ["facebook.com", "fb.watch"] },

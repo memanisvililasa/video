@@ -67,6 +67,29 @@ describe("atomic safe source download", () => {
     expect(requestDownload).toHaveBeenCalledTimes(1);
   });
 
+  it("forwards the repository-controlled HTTPS/request-profile/hostname policy", async () => {
+    const stream = new PassThrough();
+    const requestDownload = vi.fn(async () => response(stream, 6));
+    const download = createSafeFileDownloader({ requestDownload });
+    const allowHostname = (hostname: string) => hostname.endsWith(".googlevideo.com");
+    const pending = download(new URL("https://r1.googlevideo.com/videoplayback"), destinationPath, {
+      maxBytes: 10,
+      requireHttps: true,
+      requestProfile: "youtube-public-v1",
+      allowHostname
+    });
+    stream.end("source");
+    await pending;
+    expect(requestDownload).toHaveBeenCalledWith(
+      new URL("https://r1.googlevideo.com/videoplayback"),
+      expect.objectContaining({
+        requireHttps: true,
+        requestProfile: "youtube-public-v1",
+        allowHostname
+      })
+    );
+  });
+
   it("reports bounded progress only from byte counts and trusted Content-Length", async () => {
     const stream = new PassThrough();
     const progress = vi.fn();

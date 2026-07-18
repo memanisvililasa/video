@@ -379,6 +379,38 @@ describe("download orchestration service", () => {
     expect(harness.download).not.toHaveBeenCalled();
   });
 
+  it("canonicalizes Shorts server-side and maps a stale YouTube format to SOURCE_EXPIRED", async () => {
+    const extract = vi.fn(async () => ({
+      id: "youtube-metadata",
+      originalUrl: "https://www.youtube.com/",
+      title: "Short",
+      platform: "YouTube",
+      formats: [{ id: "fresh-format", label: "720p MP4", ext: "mp4" }]
+    }));
+    const download = vi.fn();
+    const extractor: Extractor = {
+      id: "youtube",
+      name: "YouTube",
+      supports: () => true,
+      extract,
+      download
+    };
+    const harness = createHarness({ getExtractor: () => extractor });
+    const job = await harness.service.enqueueDownloadJob({
+      url: "https://youtube.com/shorts/AbCdEfGhI_1?si=tracking",
+      formatId: "stale-format",
+      processingPreset: "original",
+      rightsConfirmed: true
+    });
+    const snapshot = await settleJob(harness.queue, job.jobId);
+    expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.SOURCE_EXPIRED } });
+    expect(extract).toHaveBeenCalledWith(
+      new URL("https://www.youtube.com/watch?v=AbCdEfGhI_1"),
+      expect.objectContaining({ maxDurationSeconds: 1800 })
+    );
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["extractor", API_ERROR_CODES.EXTRACTION_FAILED],
     ["download", API_ERROR_CODES.DOWNLOAD_FAILED],

@@ -67,7 +67,6 @@ export async function checkLocalRuntime(options = {}) {
     "--no-remote-components",
     "--no-cookies",
     "--no-cookies-from-browser",
-    "--no-netrc",
     "--version"
   ]), "yt-dlp").trim();
   if (ytDlpVersion !== APPROVED_YT_DLP_VERSION) {

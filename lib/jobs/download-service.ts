@@ -54,7 +54,8 @@ export async function prepareDownload(request: DownloadRequest): Promise<Prepare
   const extractor = requireExtractor(validation.url);
   const metadata = await extractor.extract(validation.url, {
     metadataTimeoutSeconds: 10,
-    maxFileSizeBytes: maxFileSizeBytes()
+    maxFileSizeBytes: maxFileSizeBytes(),
+    maxDurationSeconds: env.maxVideoDurationMinutes * 60
   });
 
   const format = metadata.formats.find((candidate) => candidate.id === request.formatId);
@@ -75,7 +76,9 @@ export async function prepareDownload(request: DownloadRequest): Promise<Prepare
       workDir: jobDirectory,
       metadataTimeoutSeconds: 10,
       downloadTimeoutSeconds: env.downloadTimeoutSeconds,
-      maxFileSizeBytes: maxFileSizeBytes()
+      maxFileSizeBytes: maxFileSizeBytes(),
+      maxDurationSeconds: env.maxVideoDurationMinutes * 60,
+      processingPreset: "original"
     });
 
     const storedFile = await savePreparedFile({

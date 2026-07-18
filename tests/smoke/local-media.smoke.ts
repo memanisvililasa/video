@@ -11,12 +11,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFileDeliveryRouteHandler } from "@/app/api/file/[id]/handler";
 import type { Extractor } from "@/lib/extractors/types";
 import { createVimeoExtractor, selectVimeoProgressiveFormats } from "@/lib/extractors/vimeo";
+import { createYouTubeExtractor } from "@/lib/extractors/youtube";
+import { selectYouTubeFormats } from "@/lib/extractors/youtube-formats";
 import { parseYtDlpMetadataJson, type ParsedPlatformMetadata } from "@/lib/extractors/yt-dlp/parser";
 import { createAudioExtractor } from "@/lib/ffmpeg/audio";
 import { createCompatibleMp4Converter } from "@/lib/ffmpeg/convert";
 import { createMediaProbe } from "@/lib/ffmpeg/probe";
 import { createConfiguredMediaProcessRunner } from "@/lib/ffmpeg/process-runner";
 import { createMediaRemux } from "@/lib/ffmpeg/remux";
+import { createMediaMerge, type MergeAudioVideoOptions, type MergeAudioVideoResult } from "@/lib/ffmpeg/merge";
 import type { ProcessingPreset } from "@/lib/ffmpeg/types";
 import { createDownloadOrchestrationService } from "@/lib/jobs/download-orchestrator";
 import { createMediaJobQueue } from "@/lib/jobs/queue";
@@ -32,7 +35,10 @@ const MAX_BYTES = 10 * 1024 * 1024;
 let temporaryRoot: string;
 let storageRoot: string;
 let fixturePath: string;
+let youtubeVideoPath: string;
+let youtubeAudioPath: string;
 let vimeoMetadata: ParsedPlatformMetadata;
+let youtubeMetadata: ParsedPlatformMetadata;
 let nextJob = 0;
 let nextFile = 0;
 let nextSource = 0;
@@ -41,9 +47,15 @@ beforeAll(async () => {
   temporaryRoot = await mkdtemp(path.join(os.tmpdir(), "videosave-local-smoke-"));
   storageRoot = path.join(temporaryRoot, "storage");
   fixturePath = path.join(temporaryRoot, "fixture.mp4");
+  youtubeVideoPath = path.join(temporaryRoot, "youtube-video.mp4");
+  youtubeAudioPath = path.join(temporaryRoot, "youtube-audio.m4a");
   vimeoMetadata = parseYtDlpMetadataJson(
     await readFile(path.join(process.cwd(), "tests/fixtures/vimeo-public.json"), "utf8"),
     "vimeo"
+  );
+  youtubeMetadata = parseYtDlpMetadataJson(
+    await readFile(path.join(process.cwd(), "tests/fixtures/youtube-public.json"), "utf8"),
+    "youtube"
   );
   await mkdir(storageRoot);
   storageRoot = await realpath(storageRoot);
@@ -56,6 +68,18 @@ beforeAll(async () => {
     "-c:a", "aac", "-shortest",
     fixturePath
   ], { timeout: 20_000, maxBuffer: 128 * 1024 });
+  await runFile("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+    "-filter_threads", "1", "-f", "lavfi", "-i", "testsrc2=size=64x96:rate=10",
+    "-t", "1", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-threads", "1",
+    youtubeVideoPath
+  ], { timeout: 20_000, maxBuffer: 128 * 1024 });
+  await runFile("ffmpeg", [
+    "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+    "-f", "lavfi", "-i", "sine=frequency=800:sample_rate=48000",
+    "-t", "1", "-vn", "-c:a", "aac", "-b:a", "128k", "-threads", "1",
+    youtubeAudioPath
+  ], { timeout: 20_000, maxBuffer: 128 * 1024 });
   const info = await lstat(fixturePath);
   if (!info.isFile() || info.isSymbolicLink() || info.size <= 0) throw new Error("Local smoke fixture is invalid.");
 });
@@ -64,7 +88,7 @@ afterAll(async () => {
   if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
 });
 
-function createHarness(extractor: Extractor) {
+function createHarness(extractorInput: Extractor | ((merge: (options: MergeAudioVideoOptions) => Promise<MergeAudioVideoResult>) => Extractor)) {
   const registry = createFileRegistry();
   const jobs = createMediaJobQueue({
     maxConcurrentJobs: 1,
@@ -94,6 +118,7 @@ function createHarness(extractor: Extractor) {
     maxOutputBytes: MAX_BYTES
   };
   const remuxMedia = createMediaRemux(common);
+  const mergeSources = createMediaMerge(common);
   const convertMedia = createCompatibleMp4Converter({
     ...common,
     maxDurationSeconds: 60,
@@ -104,6 +129,7 @@ function createHarness(extractor: Extractor) {
     maxDurationSeconds: 60,
     threads: 1
   });
+  const extractor = typeof extractorInput === "function" ? extractorInput(mergeSources) : extractorInput;
   const service = createDownloadOrchestrationService({
     jobs,
     validateUrl: validateVideoUrl,
@@ -184,6 +210,32 @@ function vimeoFixtureExtractor(extractCalls: URL[]): Extractor {
         sizeBytes
       };
     }
+  });
+}
+
+function youtubeFixtureExtractor(extractCalls: URL[], mergeSources: (options: MergeAudioVideoOptions) => Promise<MergeAudioVideoResult>): Extractor {
+  return createYouTubeExtractor({
+    metadataRunner: {
+      async extract(_platform, pageUrl) {
+        extractCalls.push(new URL(pageUrl));
+        return { ...youtubeMetadata, title: "Синтетический YouTube #shorts" };
+      }
+    },
+    async downloadToFile(url, destinationPath, options) {
+      const source = url.searchParams.get("fixture") === "audio" ? youtubeAudioPath : youtubeVideoPath;
+      await copyFile(source, destinationPath);
+      const sizeBytes = (await lstat(destinationPath)).size;
+      options.onProgress?.(sizeBytes, sizeBytes);
+      return {
+        finalUrl: new URL(url),
+        statusCode: 200,
+        headers: { "content-type": "video/mp4", "content-length": String(sizeBytes) },
+        contentType: url.searchParams.get("fixture") === "audio" ? "audio/mp4" : "video/mp4",
+        contentLength: sizeBytes,
+        sizeBytes
+      };
+    },
+    mergeSources
   });
 }
 
@@ -290,6 +342,75 @@ describe("personal-use local real-media pipeline", () => {
     expect(ready.result.downloadUrl).toBe(`/api/file/${ready.result.fileId}`);
     expect(JSON.stringify(ready)).not.toMatch(/media\.example|signature=|sourceUrl/i);
     expect(harness.registry.listRegisteredFiles().every((file) => file.kind === "final")).toBe(true);
+  });
+
+  it.each([
+    ["original", "mp4"],
+    ["compatible-mp4", "mp4"],
+    ["audio-only", "m4a"]
+  ] as const)("runs deterministic YouTube split-stream re-extraction through %s and final-only delivery", async (preset, extension) => {
+    const extractionPages: URL[] = [];
+    const harness = createHarness((mergeSources) => youtubeFixtureExtractor(extractionPages, mergeSources));
+    const selected = selectYouTubeFormats(youtubeMetadata, MAX_BYTES).find((format) => format.qualityTier === 1080)!;
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://youtube.com/shorts/AbCdEfGhI_1?si=deterministic-tracking",
+      formatId: selected.stableId,
+      processingPreset: preset,
+      rightsConfirmed: true
+    });
+    const ready = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    if (ready.status !== "ready" || !ready.result) {
+      throw new Error(`YouTube smoke ${preset} ended in ${ready.status}:${ready.error?.code ?? "none"}; media=${harness.mediaFailure()}.`);
+    }
+    expect(extractionPages.map((url) => url.toString())).toEqual([
+      "https://www.youtube.com/watch?v=AbCdEfGhI_1",
+      "https://www.youtube.com/watch?v=AbCdEfGhI_1"
+    ]);
+    expect(ready.result.filename).toMatch(new RegExp(`\\.${extension}$`));
+    expect(ready.result.downloadUrl).toBe(`/api/file/${ready.result.fileId}`);
+    if (preset === "audio-only") {
+      expect(ready.result.media).toMatchObject({ hasVideo: false, hasAudio: true, audioCodec: "aac" });
+    } else {
+      expect(ready.result.media).toMatchObject({ hasVideo: true, hasAudio: true, width: 64, height: 96 });
+    }
+    expect(JSON.stringify(ready)).not.toMatch(/googlevideo|videoplayback|sourceUrl|si=|fixture=/i);
+    expect(harness.registry.listRegisteredFiles().every((file) => file.kind === "final")).toBe(true);
+
+    const stored = harness.registry.getRegisteredFile(ready.result.fileId);
+    expect(stored).toMatchObject({ kind: "final", sizeBytes: ready.result.sizeBytes });
+    expect(stored && await lstat(stored.path)).toMatchObject({ size: ready.result.sizeBytes });
+    const handler = createFileDeliveryRouteHandler({
+      checkRateLimit: () => ({
+        ok: true,
+        allowed: true,
+        bucket: "file",
+        key: "file:youtube-smoke",
+        limit: 1,
+        remaining: 1,
+        resetAt: Date.now() + 1_000,
+        retryAfterSeconds: 0
+      }),
+      getFile: async (fileId) => {
+        const file = harness.registry.getRegisteredFile(fileId);
+        if (!file || file.kind !== "final") return null;
+        return {
+          fileId: file.id,
+          filename: file.filename,
+          contentType: file.contentType,
+          sizeBytes: file.sizeBytes,
+          expiresAt: file.expiresAt,
+          stream: createReadStream(file.path),
+          close: async () => undefined
+        };
+      }
+    });
+    const response = await handler(
+      new NextRequest(`http://127.0.0.1/api/file/${ready.result.fileId}`),
+      { params: Promise.resolve({ id: ready.result.fileId }) }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-disposition")).toContain("filename*=UTF-8''");
+    expect(Buffer.from(await response.arrayBuffer()).byteLength).toBe(ready.result.sizeBytes);
   });
 
   it("cancels an active bounded download and removes its partial file", async () => {

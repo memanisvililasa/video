@@ -3,10 +3,12 @@ import { genericDirectMediaExtractor } from "@/lib/extractors/generic-direct-med
 import { placeholderExtractors } from "@/lib/extractors/placeholders";
 import type { Extractor } from "@/lib/extractors/types";
 import { vimeoExtractor } from "@/lib/extractors/vimeo";
+import { youtubeExtractor } from "@/lib/extractors/youtube";
 
 const extractors: Extractor[] = [
   genericDirectMediaExtractor,
   vimeoExtractor,
+  youtubeExtractor,
   ...placeholderExtractors
 ];
 

@@ -7,7 +7,7 @@ import { API_ERROR_CODES } from "@/lib/types";
 const URL_SCHEME = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//;
 const SAFE_OUTPUT_BASENAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,135}$/;
 
-type LocalMediaOutputExtension = "mp4" | "m4a";
+type LocalMediaOutputExtension = "mp4" | "m4a" | "webm";
 export type LocalMediaOutputDirectoryPolicy = "same-directory" | "same-root";
 
 export type LocalMediaOutput = {
@@ -194,4 +194,14 @@ export function prepareLocalM4aOutput(
   directoryPolicy: LocalMediaOutputDirectoryPolicy = "same-directory"
 ): Promise<LocalMediaOutput> {
   return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "m4a", directoryPolicy);
+}
+
+/** @internal Shared WebM output lifecycle for trusted local FFmpeg operations. */
+export function prepareLocalWebmOutput(
+  outputPath: string,
+  inputRealPath: string,
+  getAllowedRoot: () => string,
+  directoryPolicy: LocalMediaOutputDirectoryPolicy = "same-directory"
+): Promise<LocalMediaOutput> {
+  return prepareLocalMediaOutput(outputPath, inputRealPath, getAllowedRoot, "webm", directoryPolicy);
 }
