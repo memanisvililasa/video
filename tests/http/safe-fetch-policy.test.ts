@@ -106,6 +106,29 @@ describe("safe-fetch redirect policy", () => {
     }
   });
 
+  it("keeps Reddit manifest and media redirects on the exact v.redd.it host", () => {
+    const allowRedditMedia = (hostname: string) => hostname === "v.redd.it";
+    expect(getRedirectTarget(
+      new URL("https://v.redd.it/media42/DASHPlaylist.mpd"),
+      "https://v.redd.it/media42/DASH_720.mp4?signature=synthetic",
+      true,
+      allowRedditMedia
+    ).hostname).toBe("v.redd.it");
+    for (const target of [
+      "https://preview.redd.it/media42/DASH_720.mp4",
+      "https://v.redd.it.attacker.example/media42/DASH_720.mp4",
+      "https://127.0.0.1/media42/DASH_720.mp4",
+      "http://v.redd.it/media42/DASH_720.mp4"
+    ]) {
+      expect(() => getRedirectTarget(
+        new URL("https://v.redd.it/media42/DASHPlaylist.mpd"),
+        target,
+        true,
+        allowRedditMedia
+      )).toThrow(AppError);
+    }
+  });
+
   it.each(["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1"])(
     "rejects a redirect literal to mapped unsafe IPv4: %s",
     (address) => expect(() => getRedirectTarget(initial, `https://[${address}]/fixture.mp4`)).toThrow(AppError)

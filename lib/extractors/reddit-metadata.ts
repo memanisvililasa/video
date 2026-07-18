@@ -37,6 +37,20 @@ export type RedditProductMetadata = Readonly<{
   sourceKind: "direct" | "crosspost";
 }>;
 
+export type RedditMediaLocator = Readonly<{
+  mediaId: string;
+  fallbackUrl: URL;
+  dashManifestUrl?: URL;
+  width?: number;
+  height?: number;
+  bitrate?: number;
+}>;
+
+export type RedditResolvedMetadata = Readonly<{
+  product: RedditProductMetadata;
+  locator: RedditMediaLocator;
+}>;
+
 export type RedditBodyFetcher = (
   url: URL,
   options: SafeBodyFetchOptions
@@ -48,6 +62,8 @@ export type CreateRedditMetadataProviderOptions = Readonly<{
 
 export type RedditMetadataProvider = Readonly<{
   fetch(url: URL, context?: ExtractorContext): Promise<RedditProductMetadata>;
+  /** @internal Media locators never cross the public metadata boundary. */
+  resolve(url: URL, context?: ExtractorContext): Promise<RedditResolvedMetadata>;
 }>;
 
 function record(value: unknown): value is JsonRecord {
@@ -189,7 +205,7 @@ function hostedVideoCandidate(data: JsonRecord): Readonly<{
   return video ? Object.freeze({ source: parents[0], video, sourceKind: "crosspost" }) : undefined;
 }
 
-function mediaRoot(value: unknown): string | undefined {
+function mediaLocation(value: unknown): Readonly<{ mediaId: string; url: URL }> | undefined {
   const raw = boundedString(value, 8_192);
   if (!raw) return undefined;
   let url: URL;
@@ -207,22 +223,44 @@ function mediaRoot(value: unknown): string | undefined {
     url.hash
   ) return undefined;
   const mediaId = /^\/([^/]+)\//.exec(url.pathname)?.[1];
-  return mediaId && REDDIT_MEDIA_ID.test(mediaId) ? mediaId : undefined;
+  return mediaId && REDDIT_MEDIA_ID.test(mediaId)
+    ? Object.freeze({ mediaId, url })
+    : undefined;
 }
 
-function assertHostedVideo(candidate: NonNullable<ReturnType<typeof hostedVideoCandidate>>): void {
+function mediaRoot(value: unknown): string | undefined {
+  return mediaLocation(value)?.mediaId;
+}
+
+function assertHostedVideo(
+  candidate: NonNullable<ReturnType<typeof hostedVideoCandidate>>
+): RedditMediaLocator {
   if (
     candidate.source.is_video !== true ||
     candidate.source.is_reddit_media_domain !== true ||
     boundedString(candidate.source.domain, 128)?.toLowerCase() !== REDDIT_MEDIA_HOST
   ) throw error("POST_HAS_NO_VIDEO");
-  const root = mediaRoot(candidate.video.fallback_url);
-  if (!root) throw error("EXTRACTOR_FAILED");
+  const fallback = mediaLocation(candidate.video.fallback_url);
+  if (!fallback) throw error("EXTRACTOR_FAILED");
   for (const field of ["dash_url", "hls_url"] as const) {
-    if (candidate.video[field] !== undefined && mediaRoot(candidate.video[field]) !== root) {
+    if (candidate.video[field] !== undefined && mediaRoot(candidate.video[field]) !== fallback.mediaId) {
       throw error("EXTRACTOR_FAILED");
     }
   }
+  const dash = candidate.video.dash_url === undefined
+    ? undefined
+    : mediaLocation(candidate.video.dash_url);
+  const width = finiteNumber(candidate.video.width, 1, 16_384);
+  const height = finiteNumber(candidate.video.height, 1, 16_384);
+  const bitrateKbps = finiteNumber(candidate.video.bitrate_kbps, 1, 50_000);
+  return Object.freeze({
+    mediaId: fallback.mediaId,
+    fallbackUrl: fallback.url,
+    ...(dash ? { dashManifestUrl: dash.url } : {}),
+    ...(width !== undefined ? { width } : {}),
+    ...(height !== undefined ? { height } : {}),
+    ...(bitrateKbps !== undefined ? { bitrate: bitrateKbps * 1_000 } : {})
+  });
 }
 
 function isRedditHostname(hostname: string): boolean {
@@ -253,7 +291,7 @@ function safeTitle(value: unknown): string {
   return title.ok ? title.value : "Reddit video";
 }
 
-function parseProductMetadata(payload: unknown, canonical: CanonicalRedditPost): RedditProductMetadata {
+function parseResolvedMetadata(payload: unknown, canonical: CanonicalRedditPost): RedditResolvedMetadata {
   const data = postData(payload, canonical.postId);
   if (isRemoved(data)) throw error("CONTENT_UNAVAILABLE");
   if (data.subreddit_type === "private") throw error("PRIVATE_CONTENT");
@@ -267,10 +305,10 @@ function parseProductMetadata(payload: unknown, canonical: CanonicalRedditPost):
     if (hasExternalMedia(data)) throw error("EXTERNAL_MEDIA_NOT_SUPPORTED");
     throw error("POST_HAS_NO_VIDEO");
   }
-  assertHostedVideo(candidate);
+  const locator = assertHostedVideo(candidate);
   const durationSeconds = finiteNumber(candidate.video.duration, 0, 7 * 24 * 60 * 60);
   const hasAudio = typeof candidate.video.has_audio === "boolean" ? candidate.video.has_audio : undefined;
-  return Object.freeze({
+  const product = Object.freeze({
     platform: "reddit",
     canonicalPostId: canonical.postId,
     title: safeTitle(data.title),
@@ -279,6 +317,7 @@ function parseProductMetadata(payload: unknown, canonical: CanonicalRedditPost):
     ...(hasAudio !== undefined ? { hasAudio } : {}),
     sourceKind: candidate.sourceKind
   });
+  return Object.freeze({ product, locator });
 }
 
 function mapProviderError(value: unknown): AppError {
@@ -309,26 +348,31 @@ export function createRedditMetadataProvider(
   options: CreateRedditMetadataProviderOptions = {}
 ): RedditMetadataProvider {
   const fetchBody = options.fetchBody ?? safeFetchBody;
+  async function resolve(url: URL, context?: ExtractorContext): Promise<RedditResolvedMetadata> {
+    try {
+      const canonical = canonicalizeRedditPostUrl(url);
+      const result = await fetchBody(metadataUrl(canonical.postId), {
+        maxBytes: MAX_REDDIT_JSON_BYTES,
+        timeoutSeconds: timeoutSeconds(context),
+        maxRedirects: 2,
+        requireHttps: true,
+        requestProfile: "reddit-public-v1",
+        allowHostname: allowMetadataHostname,
+        signal: context?.signal
+      });
+      mapHttpStatus(result);
+      if (!isJsonContentType(result.contentType)) throw error("EXTRACTOR_FAILED");
+      return parseResolvedMetadata(parseJson(result.body), canonical);
+    } catch (caught) {
+      if (context?.signal?.aborted) throw new AppError(API_ERROR_CODES.JOB_CANCELLED);
+      throw mapProviderError(caught);
+    }
+  }
   return Object.freeze({
     async fetch(url: URL, context?: ExtractorContext): Promise<RedditProductMetadata> {
-      try {
-        const canonical = canonicalizeRedditPostUrl(url);
-        const result = await fetchBody(metadataUrl(canonical.postId), {
-          maxBytes: MAX_REDDIT_JSON_BYTES,
-          timeoutSeconds: timeoutSeconds(context),
-          maxRedirects: 2,
-          requireHttps: true,
-          requestProfile: "reddit-public-v1",
-          allowHostname: allowMetadataHostname,
-          signal: context?.signal
-        });
-        mapHttpStatus(result);
-        if (!isJsonContentType(result.contentType)) throw error("EXTRACTOR_FAILED");
-        return parseProductMetadata(parseJson(result.body), canonical);
-      } catch (caught) {
-        throw mapProviderError(caught);
-      }
-    }
+      return (await resolve(url, context)).product;
+    },
+    resolve
   });
 }
 

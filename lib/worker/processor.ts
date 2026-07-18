@@ -82,10 +82,11 @@ function mediaCategory(value: unknown, allowlist: ReadonlySet<string>): string {
   return typeof value === "string" && allowlist.has(value.toLowerCase()) ? value.toLowerCase() : "unknown";
 }
 
-function providerCategory(extractor: Extractor): "youtube" | "vimeo" | "direct" | "generic" | "unknown" {
+function providerCategory(extractor: Extractor): "youtube" | "vimeo" | "reddit" | "direct" | "generic" | "unknown" {
   const id = extractor.id.toLowerCase();
   if (id.includes("youtube")) return "youtube";
   if (id.includes("vimeo")) return "vimeo";
+  if (id.includes("reddit")) return "reddit";
   if (id.includes("direct")) return "direct";
   if (id.includes("generic")) return "generic";
   return "unknown";
@@ -164,7 +165,7 @@ export function createMediaWorkerProcessor(
     kind: "download" | "probe" | "transcode";
     stage: ObservedMediaStage;
     claimed: ClaimedMediaJob;
-    provider?: "youtube" | "vimeo" | "direct" | "generic" | "unknown";
+    provider?: "youtube" | "vimeo" | "reddit" | "direct" | "generic" | "unknown";
     operation(): Promise<T>;
     metadata?(value: T): Readonly<Record<string, unknown>>;
   }>): Promise<T> {
@@ -243,7 +244,7 @@ export function createMediaWorkerProcessor(
       const selected = extracted.formats.find((format) => format.id === payload.formatId);
       if (!selected) {
         throw new AppError(
-          extractor.id === "vimeo" || extractor.id === "youtube"
+          extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit-internal"
             ? API_ERROR_CODES.SOURCE_EXPIRED
             : API_ERROR_CODES.UNSUPPORTED_URL
         );

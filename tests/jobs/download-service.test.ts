@@ -411,6 +411,34 @@ describe("download orchestration service", () => {
     expect(download).not.toHaveBeenCalled();
   });
 
+  it("maps a stale dependency-injected Reddit format to SOURCE_EXPIRED without enabling the registry", async () => {
+    const extract = vi.fn(async () => ({
+      id: "reddit-metadata",
+      originalUrl: "https://www.reddit.com/",
+      title: "Synthetic Reddit video",
+      platform: "Reddit",
+      formats: [{ id: "rf_fresh", label: "720p MP4", ext: "mp4" }]
+    }));
+    const download = vi.fn();
+    const extractor: Extractor = {
+      id: "reddit-internal",
+      name: "Reddit (internal)",
+      supports: () => true,
+      extract,
+      download
+    };
+    const harness = createHarness({ getExtractor: () => extractor });
+    const job = await harness.service.enqueueDownloadJob({
+      url: "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/",
+      formatId: "rf_stale",
+      processingPreset: "original",
+      rightsConfirmed: true
+    });
+    const snapshot = await settleJob(harness.queue, job.jobId);
+    expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.SOURCE_EXPIRED } });
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["extractor", API_ERROR_CODES.EXTRACTION_FAILED],
     ["download", API_ERROR_CODES.DOWNLOAD_FAILED],

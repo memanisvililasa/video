@@ -23,7 +23,9 @@ const MAX_RESPONSE_HEADER_BYTES = 16 * 1024;
 const MAX_IN_MEMORY_BODY_BYTES = 8 * 1024 * 1024;
 const USER_AGENT = "VideoSave-SafeFetcher/1.0";
 const REDDIT_PUBLIC_USER_AGENT = "VideoSave/1.0 (personal-use Reddit metadata)";
+const REDDIT_MEDIA_USER_AGENT = "VideoSave/1.0 (personal-use Reddit media)";
 const REDDIT_PUBLIC_ACCEPT = "application/json";
+const REDDIT_MEDIA_ACCEPT = "application/dash+xml,video/mp4,audio/mp4,application/octet-stream";
 
 export type SafeHeaders = Record<string, string>;
 
@@ -31,7 +33,7 @@ export type SafeFetchOptions = {
   timeoutSeconds?: number;
   maxRedirects?: number;
   requireHttps?: boolean;
-  requestProfile?: "default" | "youtube-public-v1" | "reddit-public-v1";
+  requestProfile?: "default" | "youtube-public-v1" | "reddit-public-v1" | "reddit-media-v1";
   allowHostname?: (hostname: string) => boolean;
   signal?: AbortSignal;
 };
@@ -245,11 +247,15 @@ async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders
             ? YOUTUBE_PUBLIC_USER_AGENT
             : options.requestProfile === "reddit-public-v1"
               ? REDDIT_PUBLIC_USER_AGENT
+              : options.requestProfile === "reddit-media-v1"
+                ? REDDIT_MEDIA_USER_AGENT
               : USER_AGENT,
           Accept: options.requestProfile === "youtube-public-v1"
             ? YOUTUBE_PUBLIC_ACCEPT
             : options.requestProfile === "reddit-public-v1"
               ? REDDIT_PUBLIC_ACCEPT
+              : options.requestProfile === "reddit-media-v1"
+                ? REDDIT_MEDIA_ACCEPT
               : "*/*",
           ...(options.requestProfile === "youtube-public-v1"
             ? { "Accept-Language": YOUTUBE_PUBLIC_ACCEPT_LANGUAGE, "Sec-Fetch-Mode": YOUTUBE_PUBLIC_SEC_FETCH_MODE }

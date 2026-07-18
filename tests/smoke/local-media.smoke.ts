@@ -10,6 +10,10 @@ import { NextRequest } from "next/server";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createFileDeliveryRouteHandler } from "@/app/api/file/[id]/handler";
 import type { Extractor } from "@/lib/extractors/types";
+import { normalizeRedditFormats } from "@/lib/extractors/reddit-formats";
+import type { RedditManifest } from "@/lib/extractors/reddit-manifest";
+import type { RedditMetadataProvider } from "@/lib/extractors/reddit-metadata";
+import { createRedditExtractor } from "@/lib/extractors/reddit";
 import { createVimeoExtractor, selectVimeoProgressiveFormats } from "@/lib/extractors/vimeo";
 import { createYouTubeExtractor } from "@/lib/extractors/youtube";
 import { selectYouTubeFormats } from "@/lib/extractors/youtube-formats";
@@ -29,6 +33,7 @@ import { createJobArtifactLifecycle } from "@/lib/storage/job-artifacts";
 import { createFileRegistry } from "@/lib/storage/file-registry";
 import { validateVideoUrl } from "@/lib/security/url-validation";
 import { createSafeMediaDiagnosticRunner } from "@/tests/helpers/media-process-diagnostic";
+import { API_ERROR_CODES } from "@/lib/types";
 
 const runFile = promisify(execFile);
 const MAX_BYTES = 10 * 1024 * 1024;
@@ -239,6 +244,100 @@ function youtubeFixtureExtractor(extractCalls: URL[], mergeSources: (options: Me
   });
 }
 
+function redditFixtureManifest(silent = false): RedditManifest {
+  return {
+    mediaId: "media42",
+    durationSeconds: 1,
+    representations: Object.freeze([
+      Object.freeze({
+        identity: silent ? "silent-vertical" : "video-vertical",
+        url: new URL(`https://v.redd.it/media42/${silent ? "silent" : "video"}.mp4?fixture=video`),
+        kind: "video" as const,
+        container: "mp4" as const,
+        videoCodec: "h264",
+        width: 64,
+        height: 96,
+        fps: 10,
+        bitrate: 500_000,
+        durationSeconds: 1,
+        filesizeEstimateBytes: 64_000
+      }),
+      ...(!silent ? [Object.freeze({
+        identity: "audio-128",
+        url: new URL("https://v.redd.it/media42/audio.m4a?fixture=audio"),
+        kind: "audio" as const,
+        container: "mp4" as const,
+        audioCodec: "aac",
+        bitrate: 128_000,
+        durationSeconds: 1,
+        filesizeEstimateBytes: 16_000
+      })] : [])
+    ])
+  };
+}
+
+function redditFixtureExtractor(
+  metadataCalls: URL[],
+  manifestCalls: string[],
+  mergeSources: (options: MergeAudioVideoOptions) => Promise<MergeAudioVideoResult>,
+  silent = false
+): Extractor {
+  const product = Object.freeze({
+    platform: "reddit" as const,
+    canonicalPostId: "abc123",
+    title: "Синтетический Reddit #video",
+    durationSeconds: 1,
+    redditHostedVideo: true as const,
+    hasAudio: !silent,
+    sourceKind: "direct" as const
+  });
+  const resolved = Object.freeze({
+    product,
+    locator: Object.freeze({
+      mediaId: "media42",
+      fallbackUrl: new URL("https://v.redd.it/media42/DASH_720.mp4"),
+      dashManifestUrl: new URL("https://v.redd.it/media42/DASHPlaylist.mpd"),
+      width: 64,
+      height: 96,
+      bitrate: 500_000
+    })
+  });
+  const metadataProvider: RedditMetadataProvider = {
+    async fetch(pageUrl) {
+      metadataCalls.push(new URL(pageUrl));
+      return product;
+    },
+    async resolve(pageUrl) {
+      metadataCalls.push(new URL(pageUrl));
+      return resolved;
+    }
+  };
+  return createRedditExtractor({
+    metadataProvider,
+    manifestProvider: {
+      async fetch(locator) {
+        manifestCalls.push(locator.mediaId);
+        return redditFixtureManifest(silent);
+      }
+    },
+    async downloadToFile(url, destinationPath, options) {
+      const source = url.searchParams.get("fixture") === "audio" ? youtubeAudioPath : youtubeVideoPath;
+      await copyFile(source, destinationPath);
+      const sizeBytes = (await lstat(destinationPath)).size;
+      options.onProgress?.(sizeBytes, sizeBytes);
+      return {
+        finalUrl: new URL(url),
+        statusCode: 200,
+        headers: { "content-type": url.searchParams.get("fixture") === "audio" ? "audio/mp4" : "video/mp4" },
+        contentType: url.searchParams.get("fixture") === "audio" ? "audio/mp4" : "video/mp4",
+        contentLength: sizeBytes,
+        sizeBytes
+      };
+    },
+    mergeSources
+  });
+}
+
 async function waitForTerminal(get: () => Promise<MediaJobSnapshot>): Promise<MediaJobSnapshot> {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
@@ -411,6 +510,126 @@ describe("personal-use local real-media pipeline", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-disposition")).toContain("filename*=UTF-8''");
     expect(Buffer.from(await response.arrayBuffer()).byteLength).toBe(ready.result.sizeBytes);
+  });
+
+  it.each([
+    ["original", "mp4"],
+    ["remux-to-mp4", "mp4"],
+    ["compatible-mp4", "mp4"],
+    ["audio-only", "m4a"]
+  ] as const)("runs internal Reddit split-stream materialization through %s and final-only delivery", async (preset, extension) => {
+    const metadataCalls: URL[] = [];
+    const manifestCalls: string[] = [];
+    const harness = createHarness((mergeSources) => redditFixtureExtractor(metadataCalls, manifestCalls, mergeSources));
+    const selected = normalizeRedditFormats({
+      postId: "abc123",
+      manifest: redditFixtureManifest(),
+      hasAudio: true,
+      maxFileSizeBytes: MAX_BYTES,
+      maxDurationSeconds: 60
+    })[0];
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/?utm_source=synthetic",
+      formatId: selected.stableId,
+      processingPreset: preset,
+      rightsConfirmed: true
+    });
+    const ready = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    if (ready.status !== "ready" || !ready.result) {
+      throw new Error(`Reddit smoke ${preset} ended in ${ready.status}:${ready.error?.code ?? "none"}; media=${harness.mediaFailure()}.`);
+    }
+    expect(metadataCalls).toHaveLength(2);
+    expect(manifestCalls).toEqual(["media42", "media42"]);
+    expect(ready.result.filename).toMatch(new RegExp(`\\.${extension}$`));
+    expect(ready.result.downloadUrl).toBe(`/api/file/${ready.result.fileId}`);
+    if (preset === "audio-only") {
+      expect(ready.result.media).toMatchObject({ hasVideo: false, hasAudio: true, audioCodec: "aac" });
+    } else {
+      expect(ready.result.media).toMatchObject({ hasVideo: true, hasAudio: true, width: 64, height: 96 });
+    }
+    expect(JSON.stringify(ready)).not.toMatch(/v\.redd\.it|DASH|signature|media42|utm_source|sourceUrl/i);
+    expect(harness.registry.listRegisteredFiles().every((file) => file.kind === "final")).toBe(true);
+    const stored = harness.registry.getRegisteredFile(ready.result.fileId);
+    expect(stored).toMatchObject({ kind: "final", sizeBytes: ready.result.sizeBytes });
+    expect(stored && await lstat(stored.path)).toMatchObject({ size: ready.result.sizeBytes });
+
+    const handler = createFileDeliveryRouteHandler({
+      checkRateLimit: () => ({
+        ok: true,
+        allowed: true,
+        bucket: "file",
+        key: "file:reddit-smoke",
+        limit: 1,
+        remaining: 1,
+        resetAt: Date.now() + 1_000,
+        retryAfterSeconds: 0
+      }),
+      getFile: async (fileId) => {
+        const file = harness.registry.getRegisteredFile(fileId);
+        if (!file || file.kind !== "final") return null;
+        return {
+          fileId: file.id,
+          filename: file.filename,
+          contentType: file.contentType,
+          sizeBytes: file.sizeBytes,
+          expiresAt: file.expiresAt,
+          stream: createReadStream(file.path),
+          close: async () => undefined
+        };
+      }
+    });
+    const response = await handler(
+      new NextRequest(`http://127.0.0.1/api/file/${ready.result.fileId}`),
+      { params: Promise.resolve({ id: ready.result.fileId }) }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(extension === "m4a" ? "audio/mp4" : "video/mp4");
+    expect(response.headers.get("content-length")).toBe(String(ready.result.sizeBytes));
+    expect(response.headers.get("content-disposition")).toContain("filename*=UTF-8''");
+    expect(Buffer.from(await response.arrayBuffer()).byteLength).toBe(ready.result.sizeBytes);
+  });
+
+  it.each(["original", "compatible-mp4"] as const)("preserves internal Reddit silent-video semantics for %s", async (preset) => {
+    const harness = createHarness((mergeSources) => redditFixtureExtractor([], [], mergeSources, true));
+    const selected = normalizeRedditFormats({
+      postId: "abc123",
+      manifest: redditFixtureManifest(true),
+      hasAudio: false,
+      maxFileSizeBytes: MAX_BYTES
+    })[0];
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://www.reddit.com/r/videos/comments/abc123/silent_fixture/",
+      formatId: selected.stableId,
+      processingPreset: preset,
+      rightsConfirmed: true
+    });
+    const ready = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    expect(ready).toMatchObject({
+      status: "ready",
+      result: { media: { hasVideo: true, hasAudio: false, width: 64, height: 96 } }
+    });
+    expect(harness.registry.listRegisteredFiles().every((file) => file.kind === "final")).toBe(true);
+  });
+
+  it("fails Reddit silent audio-only without publishing source, partial, or final artifacts", async () => {
+    const harness = createHarness((mergeSources) => redditFixtureExtractor([], [], mergeSources, true));
+    const selected = normalizeRedditFormats({
+      postId: "abc123",
+      manifest: redditFixtureManifest(true),
+      hasAudio: false,
+      maxFileSizeBytes: MAX_BYTES
+    })[0];
+    const enqueued = await harness.service.enqueueDownloadJob({
+      url: "https://www.reddit.com/r/videos/comments/abc123/silent_fixture/",
+      formatId: selected.stableId,
+      processingPreset: "audio-only",
+      rightsConfirmed: true
+    });
+    const failed = await waitForTerminal(() => harness.service.getDownloadJob(enqueued.jobId));
+    expect(failed).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.SOURCE_HAS_NO_AUDIO } });
+    expect(harness.registry.listRegisteredFiles().filter((file) => file.jobId === enqueued.jobId)).toEqual([]);
+    const jobDirectory = path.join(storageRoot, "jobs", enqueued.jobId);
+    await expect(lstat(jobDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("cancels an active bounded download and removes its partial file", async () => {

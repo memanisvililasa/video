@@ -127,6 +127,10 @@ function assertInputLimits(metadata: MediaProbeResult, maxDurationSeconds: numbe
   });
 }
 
+function usesFreshPlatformSources(extractor: Extractor): boolean {
+  return extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit-internal";
+}
+
 export function createDownloadOrchestrationService(
   dependencies: DownloadOrchestrationDependencies
 ): DownloadOrchestrationService {
@@ -181,10 +185,10 @@ export function createDownloadOrchestrationService(
           const selectedFormat = metadata.formats.find((format) => format.id === trustedRequest.formatId);
           if (!selectedFormat) {
             throw new AppError(
-              extractor.id === "vimeo" || extractor.id === "youtube"
+              usesFreshPlatformSources(extractor)
                 ? API_ERROR_CODES.SOURCE_EXPIRED
                 : API_ERROR_CODES.UNSUPPORTED_URL,
-              extractor.id === "vimeo" || extractor.id === "youtube"
+              usesFreshPlatformSources(extractor)
                 ? undefined
                 : "Запрошенный формат недоступен для этой ссылки."
             );

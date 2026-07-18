@@ -20,6 +20,7 @@ function redditVideo(overrides: Record<string, unknown> = {}): Record<string, un
     has_audio: true,
     width: 1280,
     height: 720,
+    bitrate_kbps: 2400,
     ...overrides
   };
 }
@@ -127,6 +128,21 @@ describe("cookie-free Reddit product metadata provider", () => {
       hasAudio: false,
       sourceKind: "crosspost"
     }));
+  });
+
+  it("exposes the validated media locator only through the internal resolve contract", async () => {
+    const { metadata } = provider(post());
+    const resolved = await metadata.resolve(POST_URL);
+    expect(resolved.product).toEqual(await metadata.fetch(POST_URL));
+    expect(resolved.locator).toEqual({
+      mediaId: "media42",
+      fallbackUrl: new URL("https://v.redd.it/media42/DASH_720.mp4"),
+      dashManifestUrl: new URL("https://v.redd.it/media42/DASHPlaylist.mpd"),
+      width: 1280,
+      height: 720,
+      bitrate: 2_400_000
+    });
+    expect(JSON.stringify(resolved.product)).not.toMatch(/v\.redd\.it|DASH|fallback|manifest/i);
   });
 
   it.each([
