@@ -233,6 +233,7 @@ export function createMediaWorkerProcessor(
       const validation = validateVideoUrl(payload.sourceUrl);
       if (!validation.ok) throw new AppError(validation.code);
       const extractor = dependencies.getExtractor(validation.url);
+      if (extractor.id === "tiktok") throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
       const provider = providerCategory(extractor);
       const extracted = await extractor.extract(validation.url, {
         signal: session.signal,

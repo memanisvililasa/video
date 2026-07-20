@@ -167,7 +167,10 @@ export function jobErrorCategory(code: ApiErrorCode | undefined): OperationalErr
     code === API_ERROR_CODES.MEMBERS_ONLY ||
     code === API_ERROR_CODES.DRM_PROTECTED ||
     code === API_ERROR_CODES.GEO_RESTRICTED ||
+    code === API_ERROR_CODES.REGION_RESTRICTED ||
     code === API_ERROR_CODES.AGE_RESTRICTED ||
+    code === API_ERROR_CODES.CAPTCHA_OR_BOT_CHALLENGE ||
+    code === API_ERROR_CODES.PHOTO_POST_NOT_SUPPORTED ||
     code === API_ERROR_CODES.LIVE_NOT_SUPPORTED ||
     code === API_ERROR_CODES.PLAYLIST_NOT_SUPPORTED ||
     code === API_ERROR_CODES.NO_SUPPORTED_FORMAT ||

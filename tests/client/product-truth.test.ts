@@ -43,6 +43,8 @@ describe("personal-use product truth", () => {
     expect(content).not.toMatch(/поддерживаются все.*YouTube|любые.*YouTube/i);
     expect(content).not.toMatch(/YouTube, Reddit, TikTok.*не поддерживаются/i);
     expect(content).not.toMatch(/Reddit, TikTok, Instagram.*не поддерживаются/i);
+    expect(content).toMatch(/TikTok, Instagram, Facebook и X\/Twitter.*(?:отключены|не поддерживаются)/i);
+    expect(content).not.toMatch(/(?:поддерживает|поддерживаемые)[^\n]{0,80}TikTok/i);
   });
 
   it("does not claim or configure Redis for the accepted local/single-host scope", async () => {

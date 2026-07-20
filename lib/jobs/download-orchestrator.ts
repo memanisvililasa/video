@@ -148,6 +148,9 @@ export function createDownloadOrchestrationService(
       throw new AppError(initialValidation.code, initialValidation.message);
     }
     const canonicalUrl = canonicalizePlatformSourceInput(request.url, initialValidation.url);
+    if (dependencies.getExtractor(canonicalUrl).id === "tiktok") {
+      throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
+    }
     const trustedRequest = Object.freeze({
       url: canonicalUrl.toString(),
       formatId: request.formatId,
