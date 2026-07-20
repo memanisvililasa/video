@@ -175,6 +175,8 @@ export function jobErrorCategory(code: ApiErrorCode | undefined): OperationalErr
     code === API_ERROR_CODES.CAROUSEL_NOT_SUPPORTED ||
     code === API_ERROR_CODES.STORY_NOT_SUPPORTED ||
     code === API_ERROR_CODES.LIVE_NOT_SUPPORTED ||
+    code === API_ERROR_CODES.GROUP_CONTENT_NOT_SUPPORTED ||
+    code === API_ERROR_CODES.MULTI_ITEM_POST_NOT_SUPPORTED ||
     code === API_ERROR_CODES.PLAYLIST_NOT_SUPPORTED ||
     code === API_ERROR_CODES.NO_SUPPORTED_FORMAT ||
     code === API_ERROR_CODES.AUTH_REQUIRED ||

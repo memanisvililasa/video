@@ -233,7 +233,7 @@ export function createMediaWorkerProcessor(
       const validation = validateVideoUrl(payload.sourceUrl);
       if (!validation.ok) throw new AppError(validation.code);
       const extractor = dependencies.getExtractor(validation.url);
-      if (extractor.id === "tiktok" || extractor.id === "instagram") {
+      if (extractor.id === "tiktok" || extractor.id === "instagram" || extractor.id === "facebook") {
         throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
       }
       const provider = providerCategory(extractor);

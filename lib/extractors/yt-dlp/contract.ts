@@ -23,14 +23,13 @@ export type PlatformPageId =
   | "facebook"
   | "x";
 
-export type YtDlpMetadataPlatform = Exclude<PlatformPageId, "reddit">;
+export type YtDlpMetadataPlatform = Exclude<PlatformPageId, "reddit" | "facebook">;
 
 export const YT_DLP_EXTRACTOR_KEYS: Readonly<Record<YtDlpMetadataPlatform, readonly string[]>> = Object.freeze({
   vimeo: Object.freeze(["Vimeo"]),
   youtube: Object.freeze(["Youtube"]),
   tiktok: Object.freeze(["TikTok"]),
   instagram: Object.freeze(["Instagram"]),
-  facebook: Object.freeze(["Facebook"]),
   x: Object.freeze(["Twitter"])
 });
 

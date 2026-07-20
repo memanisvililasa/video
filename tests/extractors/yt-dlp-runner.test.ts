@@ -13,6 +13,21 @@ it("does not expose RedditIE through the page metadata runner", () => {
   expect("reddit" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
 });
 
+it("does not expose or spawn FacebookIE through the page metadata runner", async () => {
+  expect("facebook" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
+  const processRunner = vi.fn();
+  const runner = createYtDlpMetadataRunner({
+    binaryPath: "/approved/yt-dlp",
+    nodeEnv: "production",
+    processRunner
+  });
+  await expect(runner.extract(
+    "facebook" as never,
+    new URL("https://www.facebook.com/watch/?v=700000000000001")
+  )).rejects.toMatchObject({ code: API_ERROR_CODES.UNSUPPORTED_URL });
+  expect(processRunner).not.toHaveBeenCalled();
+});
+
 afterEach(async () => {
   await Promise.all([...roots].map((root) => rm(root, { recursive: true, force: true })));
   roots.clear();

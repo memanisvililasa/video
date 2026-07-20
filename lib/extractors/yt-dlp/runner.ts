@@ -222,6 +222,9 @@ export function createYtDlpMetadataRunner(options: YtDlpMetadataRunnerOptions = 
       return verifiedVersion;
     },
     async extract(platform: YtDlpMetadataPlatform, pageUrl: URL, signal?: AbortSignal): Promise<ParsedPlatformMetadata> {
+      if (!Object.prototype.hasOwnProperty.call(YT_DLP_EXTRACTOR_KEYS, platform)) {
+        throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
+      }
       assertCanonicalPageUrl(pageUrl);
       await this.checkVersion();
       if (signal?.aborted) throw new AppError(API_ERROR_CODES.JOB_CANCELLED);
