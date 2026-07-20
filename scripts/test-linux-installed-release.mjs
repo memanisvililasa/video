@@ -271,7 +271,32 @@ function assertMetricLabels(labels) {
   }
 }
 
-export function validateInstalledMetricsText(text, options = {}) {
+function canonicalMetricLabels(labels) {
+  const entries = Object.entries(labels).sort(([left], [right]) => left.localeCompare(right, "en"));
+  return entries.length === 0
+    ? ""
+    : `{${entries.map(([name, value]) => `${name}=${JSON.stringify(value)}`).join(",")}}`;
+}
+
+function metricFamilyForSample(name, types) {
+  if (types.has(name)) return name;
+  for (const [family, type] of types) {
+    if (type === "histogram" && ["_bucket", "_sum", "_count"].some((suffix) => name === `${family}${suffix}`)) {
+      return family;
+    }
+  }
+  return null;
+}
+
+function stableMapSignature(map) {
+  return JSON.stringify([...map.entries()].sort(([left], [right]) => left.localeCompare(right, "en")));
+}
+
+function stableSetSignature(set) {
+  return JSON.stringify([...set].sort((left, right) => left.localeCompare(right, "en")));
+}
+
+function parseInstalledMetricsText(text, options = {}) {
   if (typeof text !== "string" || Buffer.byteLength(text, "utf8") > INSTALLED_METRICS_MAX_BYTES) {
     throw new Error("Installed metrics response exceeds its bound.");
   }
@@ -281,28 +306,36 @@ export function validateInstalledMetricsText(text, options = {}) {
   }
   const help = new Map();
   const types = new Map();
-  const samples = new Set();
+  const rawSamples = [];
+  const normalizedLines = [];
   const valuePattern = "[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][-+]?\\d+)?";
   for (const line of text.trimEnd().split("\n")) {
     if (line.startsWith("# HELP ")) {
       const match = line.match(/^# HELP ([A-Za-z_:][A-Za-z0-9_:]*) ([^\r\n]{1,256})$/);
       if (!match || help.has(match[1])) throw new Error("Installed metrics HELP contract is invalid.");
       help.set(match[1], match[2]);
+      normalizedLines.push(line);
       continue;
     }
     if (line.startsWith("# TYPE ")) {
       const match = line.match(/^# TYPE ([A-Za-z_:][A-Za-z0-9_:]*) (counter|gauge|histogram)$/);
       if (!match || !METRIC_TYPES.has(match[2]) || types.has(match[1])) throw new Error("Installed metrics TYPE contract is invalid.");
       types.set(match[1], match[2]);
+      normalizedLines.push(line);
       continue;
     }
     const match = line.match(new RegExp(`^([A-Za-z_:][A-Za-z0-9_:]*)(\\{[^{}]*\\})? (${valuePattern})$`));
     if (!match || !Number.isFinite(Number(match[3]))) throw new Error("Installed metrics sample is invalid.");
     const labels = parseMetricLabels(match[2]);
     assertMetricLabels(labels);
-    const identity = `${match[1]}${match[2] ?? ""}`;
-    if (samples.has(identity)) throw new Error("Installed metrics contain a duplicate sample.");
-    samples.add(identity);
+    const canonicalLabels = canonicalMetricLabels(labels);
+    rawSamples.push(Object.freeze({
+      name: match[1],
+      labels,
+      canonicalLabels,
+      value: Number(match[3])
+    }));
+    normalizedLines.push(`${match[1]}${canonicalLabels} <value>`);
   }
   for (const [name, type] of types) {
     if (!help.has(name) || !METRIC_TYPES.has(type)) throw new Error("Installed metrics descriptor is incomplete.");
@@ -312,7 +345,88 @@ export function validateInstalledMetricsText(text, options = {}) {
   for (const name of required) {
     if (!help.has(name) || !types.has(name)) throw new Error(`Installed metrics are missing required family: ${name}.`);
   }
-  return Object.freeze({ families: help.size, samples: samples.size, bytes: Buffer.byteLength(text, "utf8") });
+
+  const samples = new Map();
+  const labelSchemas = new Map();
+  for (const sample of rawSamples) {
+    const family = metricFamilyForSample(sample.name, types);
+    if (!family) throw new Error(`Installed metrics sample has no descriptor: ${sample.name}.`);
+    const identity = `${sample.name}${sample.canonicalLabels}`;
+    if (samples.has(identity)) throw new Error("Installed metrics contain a duplicate sample.");
+    const labelNames = Object.keys(sample.labels).sort((left, right) => left.localeCompare(right, "en"));
+    const familySchemas = labelSchemas.get(family) ?? new Set();
+    familySchemas.add(`${sample.name}:${labelNames.join(",")}`);
+    labelSchemas.set(family, familySchemas);
+    samples.set(identity, Object.freeze({ ...sample, family, identity }));
+  }
+
+  const buildSamples = [...samples.values()].filter((sample) => sample.name === "build_info");
+  if (
+    buildSamples.length !== 1 ||
+    buildSamples[0].value !== 1 ||
+    stableSetSignature(new Set(Object.keys(buildSamples[0].labels))) !== stableSetSignature(new Set(["releaseCategory", "role"])) ||
+    buildSamples[0].labels.releaseCategory !== "production" ||
+    (options.role !== undefined && buildSamples[0].labels.role !== options.role)
+  ) {
+    throw new Error("Installed metrics build identity is invalid.");
+  }
+  const processStartSamples = [...samples.values()].filter((sample) => sample.name === "process_start_time_seconds");
+  if (
+    processStartSamples.length !== 1 ||
+    Object.keys(processStartSamples[0].labels).length !== 0 ||
+    processStartSamples[0].value <= 0
+  ) {
+    throw new Error("Installed metrics process identity is invalid.");
+  }
+
+  return Object.freeze({
+    help,
+    types,
+    samples,
+    labelSchemas,
+    normalizedStructure: normalizedLines.join("\n"),
+    summary: Object.freeze({ families: help.size, samples: samples.size, bytes: Buffer.byteLength(text, "utf8") })
+  });
+}
+
+export function validateInstalledMetricsText(text, options = {}) {
+  return parseInstalledMetricsText(text, options).summary;
+}
+
+export function validateInstalledMetricsExpositionPair(firstText, secondText, options = {}) {
+  const first = parseInstalledMetricsText(firstText, options);
+  const second = parseInstalledMetricsText(secondText, options);
+  if (stableSetSignature(new Set(first.help.keys())) !== stableSetSignature(new Set(second.help.keys()))) {
+    throw new Error("Installed metrics family set changed between scrapes.");
+  }
+  if (stableMapSignature(first.help) !== stableMapSignature(second.help)) {
+    throw new Error("Installed metrics HELP metadata changed between scrapes.");
+  }
+  if (stableMapSignature(first.types) !== stableMapSignature(second.types)) {
+    throw new Error("Installed metrics TYPE metadata changed between scrapes.");
+  }
+  const schemaSignature = (parsed) => stableMapSignature(new Map(
+    [...parsed.labelSchemas].map(([family, schemas]) => [family, stableSetSignature(schemas)])
+  ));
+  if (schemaSignature(first) !== schemaSignature(second)) {
+    throw new Error("Installed metrics label schema changed between scrapes.");
+  }
+  if (stableSetSignature(new Set(first.samples.keys())) !== stableSetSignature(new Set(second.samples.keys()))) {
+    throw new Error("Installed metrics series set changed between scrapes.");
+  }
+  if (first.normalizedStructure !== second.normalizedStructure) {
+    throw new Error("Installed metrics canonical order changed between scrapes.");
+  }
+  for (const name of ["build_info", "process_start_time_seconds"]) {
+    const firstSamples = [...first.samples.values()].filter((sample) => sample.family === name);
+    const secondSamples = [...second.samples.values()].filter((sample) => sample.family === name);
+    for (let index = 0; index < firstSamples.length; index += 1) {
+      if (firstSamples[index].identity !== secondSamples[index]?.identity || firstSamples[index].value !== secondSamples[index]?.value) {
+        throw new Error(`Installed metrics immutable identity changed between scrapes: ${name}.`);
+      }
+    }
+  }
+  return Object.freeze({ first: first.summary, second: second.summary });
 }
 
 export function validateInstalledStructuredLogs(text, options) {
@@ -425,7 +539,7 @@ async function verifyInstalledEndpointSet(options) {
   validateInstalledMetricsText(first.body, { role: options.role });
   validateInstalledMetricsText(second.body, { role: options.role });
   const third = await loopbackRequest(options.port, "/internal/observability/metrics");
-  if (second.body !== third.body) throw new Error("Installed metrics exposition is not deterministic.");
+  validateInstalledMetricsExpositionPair(second.body, third.body, { role: options.role });
   const concurrent = await Promise.all(Array.from({ length: 8 }, () => loopbackRequest(options.port, "/internal/observability/metrics")));
   for (const response of concurrent) {
     if (response.status !== 200) throw new Error("Installed concurrent metrics scrape failed.");

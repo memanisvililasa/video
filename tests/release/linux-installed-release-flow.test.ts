@@ -18,6 +18,7 @@ const {
   parseInstalledWorkerReadyLine,
   runChecked,
   stopInstalledProcess,
+  validateInstalledMetricsExpositionPair,
   validateInstalledMetricsText,
   validateInstalledReleaseReadiness,
   validateInstalledStructuredLogs,
@@ -199,7 +200,7 @@ describe("installed worker canonical readiness record", () => {
 });
 
 describe("installed observability security contracts", () => {
-  it("validates deterministic bounded HELP/TYPE metrics with fixed labels", () => {
+  function metricsFixture() {
     const metadata = {
       schemaVersion: OBSERVABILITY_SCHEMA_VERSION,
       service: "videosave" as const,
@@ -214,6 +215,11 @@ describe("installed observability security contracts", () => {
     operational.setQueueSnapshot({ queued: 0, oldestQueuedAgeSeconds: 0, running: 0, staleLeases: 0 });
     operational.setPoolSnapshot({ up: true, active: 0, idle: 1, waiting: 0, migrationCompatible: true });
     operational.setStorageSnapshot({ up: true, readOnly: false, markerValid: true, freeBytes: 1024, freeInodes: 128 });
+    return { core, operational };
+  }
+
+  it("validates deterministic bounded HELP/TYPE metrics with fixed labels", () => {
+    const { core } = metricsFixture();
     const text = core.registry.render();
 
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(INSTALLED_METRICS_MAX_BYTES);
@@ -224,6 +230,112 @@ describe("installed observability security contracts", () => {
       .toThrow(/sample/);
     expect(() => validateInstalledMetricsText(`${text}# TYPE process_up gauge\n`, { role: "worker" }))
       .toThrow(/TYPE/);
+  });
+
+  it("accepts identical canonical structure when a dynamic gauge changes", () => {
+    const { core, operational } = metricsFixture();
+    operational.setWorkerHeartbeat(1_000);
+    const first = core.registry.render();
+    operational.setWorkerHeartbeat(1_001);
+    const second = core.registry.render();
+
+    expect(first).not.toBe(second);
+    expect(validateInstalledMetricsExpositionPair(first, second, { role: "worker" }))
+      .toMatchObject({ first: { families: expect.any(Number) }, second: { families: expect.any(Number) } });
+  });
+
+  it("accepts identical canonical structure when a counter increases", () => {
+    const { core, operational } = metricsFixture();
+    operational.jobSubmitted("original");
+    const first = core.registry.render();
+    operational.jobSubmitted("original");
+    const second = core.registry.render();
+
+    expect(first).not.toBe(second);
+    expect(() => validateInstalledMetricsExpositionPair(first, second, { role: "worker" })).not.toThrow();
+  });
+
+  it("rejects changed immutable process and build identity", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const changedStart = text.replace(
+      /process_start_time_seconds (\d+(?:\.\d+)?)/,
+      (_line, value: string) => `process_start_time_seconds ${Number(value) + 1}`
+    );
+    const changedBuild = text.replace('releaseCategory="production"', 'releaseCategory="test"');
+
+    expect(() => validateInstalledMetricsExpositionPair(text, changedStart, { role: "worker" }))
+      .toThrow(/immutable identity/);
+    expect(() => validateInstalledMetricsExpositionPair(text, changedBuild, { role: "worker" }))
+      .toThrow(/build identity/);
+  });
+
+  it("rejects a missing mandatory family", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const missing = text.split("\n")
+      .filter((line) => !line.startsWith("# HELP queue_depth ") && line !== "# TYPE queue_depth gauge" && !line.startsWith("queue_depth "))
+      .join("\n");
+
+    expect(() => validateInstalledMetricsExpositionPair(text, missing, { role: "worker" }))
+      .toThrow(/missing required family: queue_depth/);
+  });
+
+  it("rejects changed HELP or TYPE metadata", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const changedHelp = text.replace("# HELP queue_depth Current durable queued job count.", "# HELP queue_depth Changed help.");
+    const changedType = text.replace("# TYPE queue_depth gauge", "# TYPE queue_depth counter");
+
+    expect(() => validateInstalledMetricsExpositionPair(text, changedHelp, { role: "worker" }))
+      .toThrow(/HELP metadata/);
+    expect(() => validateInstalledMetricsExpositionPair(text, changedType, { role: "worker" }))
+      .toThrow(/TYPE metadata/);
+  });
+
+  it("rejects a changed label-name schema", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const changed = text.replace(
+      'readiness_status{role="worker"} 0',
+      'readiness_status{outcome="success",role="worker"} 0'
+    );
+
+    expect(() => validateInstalledMetricsExpositionPair(text, changed, { role: "worker" }))
+      .toThrow(/label schema/);
+  });
+
+  it("rejects duplicate series and malformed exposition", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const duplicate = `${text}queue_depth 0\n`;
+    const malformed = text.replace("queue_depth 0", "queue_depth NaN");
+    const timestamped = text.replace("queue_depth 0", "queue_depth 0 1234567890");
+    const exemplar = text.replace("queue_depth 0", 'queue_depth 0 # {trace_id="bounded"} 1');
+
+    expect(() => validateInstalledMetricsExpositionPair(text, duplicate, { role: "worker" }))
+      .toThrow(/duplicate sample/);
+    expect(() => validateInstalledMetricsExpositionPair(text, malformed, { role: "worker" }))
+      .toThrow(/sample is invalid/);
+    expect(() => validateInstalledMetricsExpositionPair(text, timestamped, { role: "worker" }))
+      .toThrow(/sample is invalid/);
+    expect(() => validateInstalledMetricsExpositionPair(text, exemplar, { role: "worker" }))
+      .toThrow(/sample is invalid/);
+  });
+
+  it("accepts deterministic canonical order and rejects unstable structure or order", () => {
+    const { core } = metricsFixture();
+    const text = core.registry.render();
+    const unexpected = `${text}# HELP unexpected_metric Unexpected family.\n# TYPE unexpected_metric gauge\nunexpected_metric 1\n`;
+    const queueBlock = text.match(/# HELP queue_depth [^\n]+\n# TYPE queue_depth gauge\nqueue_depth 0\n/)?.[0];
+    expect(queueBlock).toBeDefined();
+    const reordered = `${text.replace(queueBlock!, "")}${queueBlock}`;
+
+    expect(() => validateInstalledMetricsExpositionPair(text, text, { role: "worker" })).not.toThrow();
+    expect(() => validateInstalledMetricsExpositionPair(text, unexpected, { role: "worker" }))
+      .toThrow(/family set changed/);
+    expect(() => validateInstalledMetricsExpositionPair(text, reordered, { role: "worker" }))
+      .toThrow(/canonical order changed/);
   });
 
   it("validates canonical one-line lifecycle records without sensitive content", () => {
