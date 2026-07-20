@@ -517,7 +517,7 @@ describe("personal-use local real-media pipeline", () => {
     ["remux-to-mp4", "mp4"],
     ["compatible-mp4", "mp4"],
     ["audio-only", "m4a"]
-  ] as const)("runs internal Reddit split-stream materialization through %s and final-only delivery", async (preset, extension) => {
+  ] as const)("runs Reddit split-stream materialization through %s and final-only delivery", async (preset, extension) => {
     const metadataCalls: URL[] = [];
     const manifestCalls: string[] = [];
     const harness = createHarness((mergeSources) => redditFixtureExtractor(metadataCalls, manifestCalls, mergeSources));
@@ -589,7 +589,7 @@ describe("personal-use local real-media pipeline", () => {
     expect(Buffer.from(await response.arrayBuffer()).byteLength).toBe(ready.result.sizeBytes);
   });
 
-  it.each(["original", "compatible-mp4"] as const)("preserves internal Reddit silent-video semantics for %s", async (preset) => {
+  it.each(["original", "compatible-mp4"] as const)("preserves Reddit silent-video semantics for %s", async (preset) => {
     const harness = createHarness((mergeSources) => redditFixtureExtractor([], [], mergeSources, true));
     const selected = normalizeRedditFormats({
       postId: "abc123",

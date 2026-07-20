@@ -78,12 +78,12 @@ describe("VideoDownloader public YouTube and Shorts flow", () => {
     expect(document.body.textContent).not.toMatch(/stderr|yt-dlp|googlevideo|videoplayback/i);
   });
 
-  it("keeps Reddit pages unsupported", async () => {
+  it("keeps TikTok pages unsupported", async () => {
     const scenario = new MediaJobFetchScenario();
     scenario.extractSteps[0] = failure(API_ERROR_CODES.UNSUPPORTED_URL, "Этот источник пока не поддерживается.", 400);
     vi.stubGlobal("fetch", scenario.fetch);
     const screen = await render(<VideoDownloader pollingPolicy={FAST_POLLING_POLICY} />);
-    await userEvent.fill(screen.getByLabelText("Ссылка на видео"), "https://www.reddit.com/r/videos/comments/fixture");
+    await userEvent.fill(screen.getByLabelText("Ссылка на видео"), "https://www.tiktok.com/@creator/video/123456789");
     await userEvent.click(screen.getByRole("button", { name: "Проверить ссылку" }));
     await expect.element(screen.getByText("Этот источник пока не поддерживается.")).toBeVisible();
   });

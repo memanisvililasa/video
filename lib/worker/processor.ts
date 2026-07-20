@@ -244,7 +244,7 @@ export function createMediaWorkerProcessor(
       const selected = extracted.formats.find((format) => format.id === payload.formatId);
       if (!selected) {
         throw new AppError(
-          extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit-internal"
+          extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit"
             ? API_ERROR_CODES.SOURCE_EXPIRED
             : API_ERROR_CODES.UNSUPPORTED_URL
         );

@@ -1,16 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+  canonicalizeRedditSourceInput,
   canonicalizeRedditPostUrl,
   supportsRedditPostUrl
 } from "@/lib/extractors/reddit-url";
 import { API_ERROR_CODES } from "@/lib/types";
 
 describe("strict Reddit single-post URL boundary", () => {
+  it("canonicalizes the original Reddit input before job persistence", () => {
+    const fallback = new URL("https://www.reddit.com/r/videos/comments/abc123/post/?utm_source=share");
+    expect(canonicalizeRedditSourceInput(fallback.toString(), fallback).toString())
+      .toBe("https://www.reddit.com/comments/abc123/");
+  });
+
   it.each([
     "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/",
     "https://reddit.com/r/videos/comments/ABC123/another-slug",
     "https://old.reddit.com/r/videos/comments/abc123/legacy_post/",
     "https://redd.it/AbC123",
+    "https://www.reddit.com/comments/abc123/",
     "https://www.reddit.com:443/r/videos/comments/abc123/synthetic_post/"
   ])("canonicalizes a supported post identity: %s", (value) => {
     const result = canonicalizeRedditPostUrl(new URL(value));

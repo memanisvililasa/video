@@ -1,3 +1,4 @@
+import { canonicalizeRedditSourceInput, isRedditPostHostname } from "@/lib/extractors/reddit-url";
 import { canonicalizeVimeoSourceInput, isVimeoPageHostname } from "@/lib/extractors/vimeo-url";
 import { canonicalizeYouTubeSourceInput, isYouTubePageHostname } from "@/lib/extractors/youtube-url";
 
@@ -13,6 +14,9 @@ export function canonicalizePlatformSourceInput(value: string, validatedUrl: URL
   }
   if (isYouTubePageHostname(original.hostname)) {
     return canonicalizeYouTubeSourceInput(value, validatedUrl);
+  }
+  if (isRedditPostHostname(original.hostname)) {
+    return canonicalizeRedditSourceInput(value, validatedUrl);
   }
   return validatedUrl;
 }

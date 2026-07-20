@@ -4,9 +4,9 @@ VideoSave пересобирается как Next.js + TypeScript + Tailwind CS
 
 ## Текущий этап
 
-Stage 5 repository work, Stage 6.1 documentation checkpoint, Stage 7 personal-use local implementation и Stage 8.2 Vimeo checkpoint завершены. Stage 8.3 Public YouTube and Shorts реализован локально; ручной owner-authorized acceptance остаётся pending, production deployment не выполнялся. Deterministic real-media smoke не обращается во внешний Internet; ручные platform acceptance выполняются владельцем отдельно и только для разрешённого контента.
+Stage 5 repository work, Stage 6.1 documentation checkpoint, Stage 7 personal-use local implementation, Stage 8.2 Vimeo checkpoint, Stage 8.3 Public YouTube and Shorts, а также Stage 8.4A/8.4B Reddit foundations завершены. Stage 8.4C Reddit product integration реализован локально, deterministic validation пройдена, ручной owner-authorized Reddit acceptance подтверждён; production deployment не выполнялся. Deterministic real-media smoke не обращается во внешний Internet; ручные platform acceptance выполняются владельцем отдельно и только для разрешённого контента.
 
-Локальный pipeline поддерживает публичные прямые ссылки на `.mp4`, `.webm` и `.mov`, публичные одиночные Vimeo URL `vimeo.com/<numeric-id>` и `player.vimeo.com/video/<numeric-id>`, а также публичные одиночные YouTube watch URL, `youtu.be/<video-id>` и `/shorts/<video-id>`. Vimeo использует только progressive HTTPS; YouTube предпочитает сопоставимый progressive source, а при необходимости загружает bounded video/audio streams и выполняет локальный FFmpeg stream-copy merge. Оба extractor-а повторно извлекают свежие internal sources перед загрузкой и не возвращают media/CDN URL клиенту. Reddit, TikTok, Instagram, Facebook и X/Twitter остаются отключёнными. Private, members-only, paid, login-required, live/premiere, playlist, password/cookie-dependent, DRM, geo-bypassed и age-bypassed content не поддерживается.
+Локальный pipeline поддерживает публичные прямые ссылки на `.mp4`, `.webm` и `.mov`, публичные одиночные Vimeo URL `vimeo.com/<numeric-id>` и `player.vimeo.com/video/<numeric-id>`, публичные одиночные YouTube watch URL, `youtu.be/<video-id>` и `/shorts/<video-id>`, а также публичные одиночные Reddit post URL и `redd.it/<post-id>` только с Reddit-hosted `v.redd.it` video. Vimeo использует только progressive HTTPS; YouTube предпочитает сопоставимый progressive source, а при необходимости загружает bounded video/audio streams; Reddit строго обрабатывает bounded public JSON и DASH manifest, включая split-stream и silent-video варианты. Platform extractors повторно извлекают свежие internal sources перед загрузкой и не возвращают media/CDN URL клиенту. TikTok, Instagram, Facebook и X/Twitter остаются отключёнными. Private, members-only, paid, login-required, removed, live/premiere, playlist, gallery, external-embed, password/cookie-dependent, DRM, geo-bypassed и age-bypassed content не поддерживается.
 
 ## Production-архитектура
 
@@ -22,7 +22,7 @@ PostgreSQL `JobRepository`, queue/lease adapter, Phase A shared-volume media sto
 
 ## Локальная разработка
 
-Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, FFmpeg/ffprobe с encoders `libx264` и `aac`, а также system binary yt-dlp `2026.07.04`. yt-dlp используется server-only Vimeo/YouTube metadata extractors и запускается только через repository-controlled runner; global/user config, playlists, cookies, netrc, browser profiles, JS runtimes, plugins, remote components и пользовательские arguments отключены. Медиа загружается существующим bounded downloader, а не yt-dlp download mode. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
+Требуется точный repository toolchain Node.js `24.18.0` + npm `11.6.0`, FFmpeg/ffprobe с encoders `libx264` и `aac`, а также system binary yt-dlp `2026.07.04`. yt-dlp используется только server-only Vimeo/YouTube metadata extractors и запускается через repository-controlled runner; Reddit использует собственные bounded cookie-free JSON/manifest fetchers. Global/user config, playlists, cookies, netrc, browser profiles, JS runtimes, plugins, remote components и пользовательские arguments отключены. Медиа загружается существующим bounded downloader, а не yt-dlp download mode. PostgreSQL, production environment file и отдельный worker для local runtime не нужны.
 
 ```bash
 corepack npm install
@@ -45,6 +45,12 @@ corepack npm run test:local:smoke
 corepack npm run typecheck
 corepack npm run build
 ```
+
+### Stage 8.4C: Reddit owner acceptance
+
+Deterministic browser/unit/smoke validation использует только synthetic fixtures и не заменяет ручную проверку платформы. Владелец отдельно выполнил acceptance только на собственном либо явно разрешённом публичном Reddit-hosted видео.
+
+Ручной acceptance подтвердил распознавание одиночного post URL, metadata и quality variants, compatible MP4 и audio-only для источника с аудио, корректное воспроизведение видео и звука, refresh/reconnect, cancellation без partial publication и final file delivery. Synthetic gates отдельно подтверждают `redd.it` canonicalization, silent-video truth, безопасный `SOURCE_HAS_NO_AUDIO`, отказ для gallery, post без видео и external embed, а также отсутствие `v.redd.it`, DASH/audio locators, cookies и внутренних путей в UI/public API. Закрытие checkpoint требует успешного exact-commit Validate и не разрешает production deployment.
 
 ## Immutable production release (5.9.8B1)
 

@@ -134,7 +134,7 @@ function extractor(topology: RedditFormatTopology, overrides: Record<string, unk
   };
 }
 
-describe("internal Reddit media extractor", () => {
+describe("Reddit media extractor", () => {
   it.each([
     ["progressive", "original", 1, 0],
     ["split", "original", 2, 1],

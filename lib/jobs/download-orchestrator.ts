@@ -128,7 +128,7 @@ function assertInputLimits(metadata: MediaProbeResult, maxDurationSeconds: numbe
 }
 
 function usesFreshPlatformSources(extractor: Extractor): boolean {
-  return extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit-internal";
+  return extractor.id === "vimeo" || extractor.id === "youtube" || extractor.id === "reddit";
 }
 
 export function createDownloadOrchestrationService(

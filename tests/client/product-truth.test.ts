@@ -13,7 +13,7 @@ const productFiles = [
 ];
 
 describe("personal-use product truth", () => {
-  it("describes direct media plus bounded Vimeo/YouTube support without stale claims", async () => {
+  it("describes direct media plus bounded Vimeo/YouTube/Reddit support without stale claims", async () => {
     const content = (await Promise.all(productFiles.map((relative) =>
       readFile(path.join(process.cwd(), relative), "utf8")
     ))).join("\n");
@@ -30,11 +30,19 @@ describe("personal-use product truth", () => {
     expect(content).toMatch(/watch-видео|watch URL/i);
     expect(content).toMatch(/раздельные.*поток|video\/audio streams/i);
     expect(content).toMatch(/playlist/i);
+    expect(content).toMatch(/Reddit/);
+    expect(content).toMatch(/Reddit-hosted|v\.redd\.it/i);
+    expect(content).toMatch(/single|одиночн/i);
+    expect(content).toMatch(/split|раздельные.*поток/i);
+    expect(content).toMatch(/silent|без аудио/i);
+    expect(content).toMatch(/gallery/i);
+    expect(content).toMatch(/external embed/i);
     expect(content).toMatch(/другие страницы платформ|другие page URL/i);
     expect(content).toMatch(/не поддерживаются|отклоняются/i);
     expect(content).not.toMatch(/поддерживаются все.*Vimeo|любые.*Vimeo/i);
     expect(content).not.toMatch(/поддерживаются все.*YouTube|любые.*YouTube/i);
     expect(content).not.toMatch(/YouTube, Reddit, TikTok.*не поддерживаются/i);
+    expect(content).not.toMatch(/Reddit, TikTok, Instagram.*не поддерживаются/i);
   });
 
   it("does not claim or configure Redis for the accepted local/single-host scope", async () => {

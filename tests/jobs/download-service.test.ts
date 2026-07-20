@@ -411,7 +411,7 @@ describe("download orchestration service", () => {
     expect(download).not.toHaveBeenCalled();
   });
 
-  it("maps a stale dependency-injected Reddit format to SOURCE_EXPIRED without enabling the registry", async () => {
+  it("maps a stale dependency-injected Reddit format to SOURCE_EXPIRED", async () => {
     const extract = vi.fn(async () => ({
       id: "reddit-metadata",
       originalUrl: "https://www.reddit.com/",
@@ -421,21 +421,25 @@ describe("download orchestration service", () => {
     }));
     const download = vi.fn();
     const extractor: Extractor = {
-      id: "reddit-internal",
-      name: "Reddit (internal)",
+      id: "reddit",
+      name: "Reddit",
       supports: () => true,
       extract,
       download
     };
     const harness = createHarness({ getExtractor: () => extractor });
     const job = await harness.service.enqueueDownloadJob({
-      url: "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/",
+      url: "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/?utm_source=synthetic",
       formatId: "rf_stale",
       processingPreset: "original",
       rightsConfirmed: true
     });
     const snapshot = await settleJob(harness.queue, job.jobId);
     expect(snapshot).toMatchObject({ status: "failed", error: { code: API_ERROR_CODES.SOURCE_EXPIRED } });
+    expect(extract).toHaveBeenCalledWith(
+      new URL("https://www.reddit.com/comments/abc123/"),
+      expect.objectContaining({ maxDurationSeconds: 1800 })
+    );
     expect(download).not.toHaveBeenCalled();
   });
 

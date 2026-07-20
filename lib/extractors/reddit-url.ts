@@ -4,6 +4,7 @@ import { API_ERROR_CODES } from "@/lib/types";
 const REDDIT_POST_HOSTS = new Set(["reddit.com", "www.reddit.com", "old.reddit.com", "redd.it"]);
 const REDDIT_POST_ID = /^[a-z0-9]{5,12}$/;
 const REDDIT_POST_PATH = /^\/r\/([A-Za-z0-9_]{1,32})\/comments\/([A-Za-z0-9]{5,12})(?:\/([A-Za-z0-9_-]{1,200}))?\/?$/;
+const REDDIT_CANONICAL_POST_PATH = /^\/comments\/([A-Za-z0-9]{5,12})\/?$/;
 const REDDIT_SHORT_PATH = /^\/([A-Za-z0-9]{5,12})\/?$/;
 const TRACKING_QUERY_KEYS = new Set([
   "utm_source",
@@ -64,10 +65,10 @@ export function canonicalizeRedditPostUrl(input: URL): CanonicalRedditPost {
   ) throw unsupported();
 
   assertTrackingQuery(url);
-  const match = hostname === "redd.it"
-    ? REDDIT_SHORT_PATH.exec(url.pathname)
-    : REDDIT_POST_PATH.exec(url.pathname);
-  const postId = match?.[hostname === "redd.it" ? 1 : 2]?.toLowerCase();
+  const postId = (hostname === "redd.it"
+    ? REDDIT_SHORT_PATH.exec(url.pathname)?.[1]
+    : REDDIT_POST_PATH.exec(url.pathname)?.[2] ?? REDDIT_CANONICAL_POST_PATH.exec(url.pathname)?.[1]
+  )?.toLowerCase();
   if (!postId || !REDDIT_POST_ID.test(postId)) throw unsupported();
 
   return Object.freeze({
@@ -84,4 +85,16 @@ export function supportsRedditPostUrl(url: URL): boolean {
   } catch {
     return false;
   }
+}
+
+export function canonicalizeRedditSourceInput(value: string, validatedUrl: URL): URL {
+  let original: URL;
+  try {
+    original = new URL(value.trim());
+  } catch {
+    return validatedUrl;
+  }
+  return isRedditPostHostname(original.hostname)
+    ? canonicalizeRedditPostUrl(original).url
+    : validatedUrl;
 }

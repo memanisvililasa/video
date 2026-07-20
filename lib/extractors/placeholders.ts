@@ -12,8 +12,7 @@ const platforms: readonly PlatformPlaceholder[] = [
   { id: "tiktok", name: "TikTok", domains: ["tiktok.com"] },
   { id: "instagram", name: "Instagram", domains: ["instagram.com"] },
   { id: "facebook", name: "Facebook", domains: ["facebook.com", "fb.watch"] },
-  { id: "x", name: "X", domains: ["x.com", "twitter.com"] },
-  { id: "reddit", name: "Reddit", domains: ["reddit.com", "redd.it"] }
+  { id: "x", name: "X", domains: ["x.com", "twitter.com"] }
 ];
 
 function hostnameMatches(hostname: string, domains: readonly string[]): boolean {

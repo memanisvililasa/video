@@ -363,7 +363,7 @@ export function VideoDownloader({ pollingPolicy }: VideoDownloaderProps = {}) {
                   value={url}
                   disabled={isJobActive(uiState)}
                   onChange={(event) => handleUrlChange(event.target.value)}
-                  placeholder="https://youtube.com/shorts/…"
+                  placeholder="https://reddit.com/r/…/comments/…"
                   aria-invalid={uiState.status === "failed" || uiState.status === "network-error"}
                   aria-describedby="video-url-status"
                   className="h-12 w-full rounded-xl border border-slate-200 bg-white pl-12 pr-4 text-sm font-medium text-ink outline-none transition placeholder:text-slate-400 focus:border-brand focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { findExtractor, listExtractors, requireExtractor } from "@/lib/extractors/registry";
 
 describe("personal-use extractor registry", () => {
-  it("keeps Stage 8.4A metadata outside the production extractor registry", () => {
+  it("enables exactly one Reddit extractor in the production registry", () => {
     expect(listExtractors().filter((extractor) => extractor.id === "reddit")).toHaveLength(1);
     expect(requireExtractor(new URL("https://www.reddit.com/r/videos/comments/abc123/synthetic_post/")).id).toBe("reddit");
   });
@@ -20,8 +20,7 @@ describe("personal-use extractor registry", () => {
     ["tiktok", "https://www.tiktok.com/@creator/video/1"],
     ["instagram", "https://www.instagram.com/reel/public"],
     ["facebook", "https://www.facebook.com/watch/?v=1"],
-    ["x", "https://x.com/creator/status/1"],
-    ["reddit", "https://www.reddit.com/r/videos/comments/public"]
+    ["x", "https://x.com/creator/status/1"]
   ])("keeps the %s page boundary explicit", async (id, value) => {
     const extractor = requireExtractor(new URL(value));
     expect(extractor.id).toBe(id);
@@ -29,6 +28,26 @@ describe("personal-use extractor registry", () => {
       code: "UNSUPPORTED_URL",
       status: 400
     });
+  });
+
+  it.each([
+    "https://www.reddit.com/r/videos/comments/abc123/synthetic_post/",
+    "https://reddit.com/r/videos/comments/ABC123/another-slug",
+    "https://old.reddit.com/r/videos/comments/abc123/legacy_post/",
+    "https://www.reddit.com/comments/abc123/",
+    "https://redd.it/abc123"
+  ])("enables only the strict Reddit single-post extractor for %s", (value) => {
+    expect(requireExtractor(new URL(value)).id).toBe("reddit");
+  });
+
+  it.each([
+    "http://www.reddit.com/r/videos/comments/abc123/post/",
+    "https://www.reddit.com/r/videos/",
+    "https://www.reddit.com/gallery/abc123",
+    "https://www.reddit.com/r/videos/comments/abc123/post/comment42/",
+    "https://redd.it/tiny"
+  ])("does not classify out-of-scope Reddit pages: %s", (value) => {
+    expect(findExtractor(new URL(value))).toBeUndefined();
   });
 
   it.each([

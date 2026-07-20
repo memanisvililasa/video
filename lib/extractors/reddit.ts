@@ -107,10 +107,6 @@ function assertWorkDirectory(workDir: string): string {
   return path.resolve(workDir);
 }
 
-/**
- * Internal-only Stage 8.4B extractor. It is intentionally not imported by the
- * production extractor registry until Stage 8.4C product integration.
- */
 export function createRedditExtractor(options: CreateRedditExtractorOptions = {}): Extractor {
   const metadataProvider = options.metadataProvider ?? createRedditMetadataProvider();
   const manifestProvider = options.manifestProvider ?? createRedditManifestProvider();
@@ -187,8 +183,8 @@ export function createRedditExtractor(options: CreateRedditExtractorOptions = {}
   }
 
   return Object.freeze({
-    id: "reddit-internal",
-    name: "Reddit (internal)",
+    id: "reddit",
+    name: "Reddit",
     supports: supportsRedditPostUrl,
     async extract(url: URL, context?: ExtractorContext): Promise<VideoMetadata> {
       const fresh = await freshFormats(url, context);
@@ -320,3 +316,5 @@ export function createRedditExtractor(options: CreateRedditExtractorOptions = {}
     }
   });
 }
+
+export const redditExtractor = createRedditExtractor();

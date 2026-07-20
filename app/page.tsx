@@ -9,7 +9,7 @@ import { VideoDownloader } from "@/components/video-downloader";
 
 export const metadata: Metadata = {
   alternates: { canonical: "/" },
-  description: "VideoSave локально обрабатывает публичные прямые видеофайлы, одиночные страницы Vimeo, YouTube и Shorts без обхода ограничений."
+  description: "VideoSave локально обрабатывает публичные прямые видеофайлы и одиночные страницы Vimeo, YouTube, Shorts и Reddit-hosted video posts без обхода ограничений."
 };
 
 export default function HomePage() {
@@ -19,7 +19,7 @@ export default function HomePage() {
     name: "VideoSave",
     applicationCategory: "UtilitiesApplication",
     operatingSystem: "Web",
-    description: "Personal-use инструмент для разрешённых публичных видеофайлов и одиночных страниц Vimeo, YouTube и Shorts.",
+    description: "Personal-use инструмент для разрешённых публичных видеофайлов и одиночных страниц Vimeo, YouTube, Shorts и Reddit-hosted video posts.",
     offers: { "@type": "Offer", price: "0", priceCurrency: "EUR" }
   };
 
@@ -61,7 +61,7 @@ export default function HomePage() {
 
       <section className="mx-auto max-w-5xl px-5 pb-16 sm:px-8 sm:pb-20">
         <LegalCallout>
-          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, пароль, paywall, географические или возрастные ограничения и настройки приватности. Поддерживаются публичные прямые HTTP(S)-ссылки на `.mp4`, `.webm`, `.mov`, публичные одиночные страницы Vimeo с progressive HTTPS-форматом, а также публичные одиночные YouTube-видео и Shorts; другие страницы платформ отклоняются.
+          <strong>Legal notice.</strong> VideoSave не обходит DRM, авторизацию, cookies, CAPTCHA, пароль, paywall, географические или возрастные ограничения и настройки приватности. Поддерживаются публичные прямые HTTP(S)-ссылки на `.mp4`, `.webm`, `.mov`, публичные одиночные страницы Vimeo, YouTube-видео и Shorts, а также одиночные Reddit posts только с Reddit-hosted video; другие страницы платформ отклоняются.
         </LegalCallout>
       </section>
     </>

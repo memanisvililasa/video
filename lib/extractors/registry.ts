@@ -1,6 +1,7 @@
 import { AppError } from "@/lib/errors";
 import { genericDirectMediaExtractor } from "@/lib/extractors/generic-direct-media";
 import { placeholderExtractors } from "@/lib/extractors/placeholders";
+import { redditExtractor } from "@/lib/extractors/reddit";
 import type { Extractor } from "@/lib/extractors/types";
 import { vimeoExtractor } from "@/lib/extractors/vimeo";
 import { youtubeExtractor } from "@/lib/extractors/youtube";
@@ -9,6 +10,7 @@ const extractors: Extractor[] = [
   genericDirectMediaExtractor,
   vimeoExtractor,
   youtubeExtractor,
+  redditExtractor,
   ...placeholderExtractors
 ];
 
