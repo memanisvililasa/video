@@ -385,6 +385,27 @@ describe("download orchestration service", () => {
     expect(placeholder.download).not.toHaveBeenCalled();
   });
 
+  it("rejects the disabled Instagram placeholder before creating a job", async () => {
+    const placeholder: Extractor = {
+      id: "instagram",
+      name: "Instagram",
+      supports: () => true,
+      extract: vi.fn(async () => { throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL); }),
+      download: vi.fn(async () => { throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL); })
+    };
+    const harness = createHarness({ getExtractor: () => placeholder });
+    const error = syncError(() => harness.service.enqueueDownloadJob({
+      url: "https://www.instagram.com/reel/Synth_01/",
+      formatId: "synthetic-format",
+      processingPreset: "original",
+      rightsConfirmed: true
+    }));
+    expect(error.code).toBe(API_ERROR_CODES.UNSUPPORTED_URL);
+    expect((await harness.queue.getStats()).totalJobs).toBe(0);
+    expect(placeholder.extract).not.toHaveBeenCalled();
+    expect(placeholder.download).not.toHaveBeenCalled();
+  });
+
   it("fails safely when formatId is absent from fresh server metadata", async () => {
     const harness = createHarness();
     harness.extract.mockResolvedValueOnce({

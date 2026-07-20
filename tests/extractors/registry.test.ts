@@ -18,6 +18,17 @@ describe("personal-use extractor registry", () => {
     });
   });
 
+  it("keeps exactly one disabled Instagram placeholder in the production registry", async () => {
+    const placeholders = listExtractors().filter((extractor) => extractor.id === "instagram");
+    expect(placeholders).toHaveLength(1);
+    const url = new URL("https://www.instagram.com/reel/Synth_01/");
+    expect(requireExtractor(url)).toBe(placeholders[0]);
+    await expect(placeholders[0]?.extract(url)).rejects.toMatchObject({
+      code: "UNSUPPORTED_URL",
+      status: 400
+    });
+  });
+
   it.each([
     "https://v.redd.it/abc/DASH_720.mp4",
     "https://video.twimg.com/source/video.webm",
