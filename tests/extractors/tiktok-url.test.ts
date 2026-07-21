@@ -22,7 +22,8 @@ function expectCode(value: string, code: string = API_ERROR_CODES.UNSUPPORTED_UR
 describe("internal TikTok URL identity", () => {
   it.each([
     `https://www.tiktok.com/@synthetic/video/${VIDEO_ID}`,
-    `https://tiktok.com/@synthetic/video/${VIDEO_ID}`
+    `https://tiktok.com/@synthetic/video/${VIDEO_ID}`,
+    `https://m.tiktok.com/@synthetic/video/${VIDEO_ID}`
   ])("canonicalizes a strict single-video URL: %s", (value) => {
     expect(canonicalizeTikTokVideoUrl(new URL(value))).toMatchObject({
       platform: "tiktok",
@@ -48,7 +49,8 @@ describe("internal TikTok URL identity", () => {
 
   it.each([
     ["vm", "https://vm.tiktok.com/SynthCode/"],
-    ["vt", "https://vt.tiktok.com/SynthCode/"]
+    ["vt", "https://vt.tiktok.com/SynthCode/"],
+    ["www", "https://www.tiktok.com/t/SynthCode/"]
   ])("classifies a %s short link without treating its code as video identity", (_label, value) => {
     expect(classifyTikTokUrl(new URL(value))).toMatchObject({
       platform: "tiktok",
@@ -67,7 +69,7 @@ describe("internal TikTok URL identity", () => {
     "https://www.tiktok.com/sound/synthetic-7000000000000000001",
     "https://www.tiktok.com/@synthetic/story/7000000000000000001",
     "https://www.tiktok.com/@synthetic/playlist/7000000000000000001",
-    "https://www.tiktok.com/t/ZUnknown/",
+    "https://www.tiktok.com/t/Z/",
     `http://www.tiktok.com/@synthetic/video/${VIDEO_ID}`,
     `https://user:password@www.tiktok.com/@synthetic/video/${VIDEO_ID}`,
     `https://www.tiktok.com:444/@synthetic/video/${VIDEO_ID}`,

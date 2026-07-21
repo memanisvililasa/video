@@ -37,13 +37,14 @@ function normalize(value = output()) {
 }
 
 describe("TikTok synthetic metadata normalization", () => {
-  it("exposes only a non-executable NO-GO surface", () => {
-    expect(TIKTOK_METADATA_EXECUTION_DECISION).toBe("no-go");
+  it("exposes the restricted parser while keeping production disabled", () => {
+    expect(TIKTOK_METADATA_EXECUTION_DECISION).toBe("restricted-page");
     expect(TIKTOK_METADATA_PROVIDER_PRODUCTION_ENABLED).toBe(false);
     expect(Object.keys(metadataModule).sort()).toEqual([
       "TIKTOK_METADATA_EXECUTION_DECISION",
       "TIKTOK_METADATA_PROVIDER_PRODUCTION_ENABLED",
-      "normalizeSyntheticTikTokMetadata"
+      "normalizeSyntheticTikTokMetadata",
+      "parseTikTokHydrationMetadata"
     ]);
   });
 
@@ -79,6 +80,14 @@ describe("TikTok synthetic metadata normalization", () => {
     }));
     expect(metadata.title).toBe("Привет мир 😀 #тест");
     expect(metadata.description).toBe("line one line two name");
+  });
+
+  it("redacts URLs and token-like text from output", () => {
+    const metadata = normalize(output({
+      title: "Watch https://cdn.example/video.mp4?token=secret now",
+      description: "authorization=BearerSecret signed_token=verysecretvalue"
+    }));
+    expect(`${metadata.title} ${metadata.description}`).not.toMatch(/https?:|cdn\.example|authorization|secret/i);
   });
 
   it("truncates descriptions by Unicode code points and represents silent video", () => {

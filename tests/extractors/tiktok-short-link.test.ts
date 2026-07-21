@@ -45,7 +45,8 @@ async function expectCode(operation: Promise<unknown>, code: string): Promise<vo
 describe("controlled TikTok short-link resolver", () => {
   it.each([
     "https://vm.tiktok.com/SynthCode/",
-    "https://vt.tiktok.com/SynthCode/"
+    "https://vt.tiktok.com/SynthCode/",
+    "https://www.tiktok.com/t/SynthCode/"
   ])("resolves %s to canonical video identity through synthetic HEAD transport", async (value) => {
     const deps = dependencies([{ statusCode: 302, location: `https://www.tiktok.com/@synthetic/video/${VIDEO_ID}` }]);
     const resolved = await createTikTokShortLinkResolver(deps)(short(value));
@@ -58,7 +59,7 @@ describe("controlled TikTok short-link resolver", () => {
   it("permits a bounded redirect chain within exact TikTok hosts", async () => {
     const deps = dependencies([
       { statusCode: 301, location: "https://vt.tiktok.com/SecondCode/?_t=tracking" },
-      { statusCode: 302, location: `https://tiktok.com/@another/video/${VIDEO_ID}?is_copy_url=1#fragment` }
+      { statusCode: 302, location: `https://www.tiktok.com/@another/video/${VIDEO_ID}?is_copy_url=1#fragment` }
     ]);
     const resolved = await createTikTokShortLinkResolver(deps)(short());
     expect(resolved.canonicalUrl.search).toBe("");
@@ -71,6 +72,8 @@ describe("controlled TikTok short-link resolver", () => {
     ["live", "https://www.tiktok.com/@synthetic/live", API_ERROR_CODES.LIVE_NOT_SUPPORTED],
     ["photo", `https://www.tiktok.com/@synthetic/photo/${VIDEO_ID}`, API_ERROR_CODES.PHOTO_POST_NOT_SUPPORTED],
     ["external", "https://example.com/video", API_ERROR_CODES.UNSUPPORTED_URL],
+    ["mobile alias", `https://m.tiktok.com/@synthetic/video/${VIDEO_ID}`, API_ERROR_CODES.UNSUPPORTED_URL],
+    ["bare alias", `https://tiktok.com/@synthetic/video/${VIDEO_ID}`, API_ERROR_CODES.UNSUPPORTED_URL],
     ["lookalike", `https://tiktok.com.attacker.example/@synthetic/video/${VIDEO_ID}`, API_ERROR_CODES.UNSUPPORTED_URL]
   ])("rejects a redirect to %s", async (_label, location, code) => {
     const resolver = createTikTokShortLinkResolver(dependencies([{ statusCode: 302, location }]));
@@ -101,6 +104,18 @@ describe("controlled TikTok short-link resolver", () => {
     await expect(excessive(short())).rejects.toMatchObject({ code: API_ERROR_CODES.EXTRACTOR_FAILED });
   });
 
+  it.each([
+    [401, API_ERROR_CODES.LOGIN_REQUIRED],
+    [403, API_ERROR_CODES.CAPTCHA_OR_BOT_CHALLENGE],
+    [404, API_ERROR_CODES.CONTENT_UNAVAILABLE],
+    [410, API_ERROR_CODES.CONTENT_UNAVAILABLE],
+    [429, API_ERROR_CODES.RATE_LIMITED],
+    [451, API_ERROR_CODES.REGION_RESTRICTED]
+  ])("maps short-link HTTP %s safely", async (statusCode, code) => {
+    await expect(createTikTokShortLinkResolver(dependencies([{ statusCode }]))(short()))
+      .rejects.toMatchObject({ code });
+  });
+
   it("maps timeout and caller abort without leaking URLs", async () => {
     const pending = new Promise<TikTokShortLinkHeadResponse>(() => undefined);
     const timed = createTikTokShortLinkResolver(dependencies([], {
@@ -114,5 +129,10 @@ describe("controlled TikTok short-link resolver", () => {
     }))(short(), { signal: controller.signal });
     controller.abort();
     await expectCode(aborted, API_ERROR_CODES.JOB_CANCELLED);
+  });
+
+  it("does not allow construction to widen the ten-second or three-redirect boundary", () => {
+    expect(() => createTikTokShortLinkResolver(dependencies([]), { timeoutMs: 10_001 })).toThrow(TypeError);
+    expect(() => createTikTokShortLinkResolver(dependencies([]), { maxRedirects: 4 })).toThrow(TypeError);
   });
 });

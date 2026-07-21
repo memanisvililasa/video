@@ -1,13 +1,14 @@
 import { AppError } from "@/lib/errors";
 import { API_ERROR_CODES } from "@/lib/types";
 
-const TIKTOK_VIDEO_HOSTS = new Set(["tiktok.com", "www.tiktok.com"]);
+const TIKTOK_VIDEO_HOSTS = new Set(["tiktok.com", "www.tiktok.com", "m.tiktok.com"]);
 const TIKTOK_SHORT_HOSTS = new Set(["vm.tiktok.com", "vt.tiktok.com"]);
 const TIKTOK_VIDEO_ID = /^[0-9]{15,24}$/;
 const TIKTOK_USERNAME = /^[A-Za-z0-9._-]{1,64}$/;
 const TIKTOK_SHORT_CODE = /^[A-Za-z0-9_]{4,64}$/;
 const TIKTOK_VIDEO_PATH = /^\/@([A-Za-z0-9._-]{1,64})\/video\/([0-9]{15,24})\/?$/;
 const TIKTOK_SHORT_PATH = /^\/([A-Za-z0-9_]{4,64})\/?$/;
+const TIKTOK_WEB_SHORT_PATH = /^\/t\/([A-Za-z0-9_]{4,64})\/?$/;
 const TRACKING_QUERY_KEYS = new Set([
   "_r",
   "_t",
@@ -88,6 +89,11 @@ export function isTikTokBoundaryHostname(hostname: string): boolean {
   return TIKTOK_VIDEO_HOSTS.has(normalized) || TIKTOK_SHORT_HOSTS.has(normalized);
 }
 
+export function isTikTokShortRedirectHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return TIKTOK_SHORT_HOSTS.has(normalized) || normalized === "www.tiktok.com";
+}
+
 export function canonicalizeTikTokVideoUrl(input: URL): CanonicalTikTokVideoIdentity {
   const url = new URL(input.toString());
   url.hash = "";
@@ -116,7 +122,21 @@ export function classifyTikTokUrl(input: URL): TikTokUrlIdentity {
   const url = new URL(input.toString());
   url.hash = "";
   const hostname = assertTransportBoundary(url);
-  if (TIKTOK_VIDEO_HOSTS.has(hostname)) return canonicalizeTikTokVideoUrl(url);
+  if (TIKTOK_VIDEO_HOSTS.has(hostname)) {
+    if (hostname === "www.tiktok.com") {
+      assertTrackingQuery(url);
+      const shortCode = TIKTOK_WEB_SHORT_PATH.exec(url.pathname)?.[1];
+      if (shortCode && TIKTOK_SHORT_CODE.test(shortCode)) {
+        return Object.freeze({
+          platform: "tiktok",
+          shortCode,
+          url: new URL(`https://www.tiktok.com/t/${shortCode}/`),
+          sourceKind: "short-link"
+        });
+      }
+    }
+    return canonicalizeTikTokVideoUrl(url);
+  }
   if (!TIKTOK_SHORT_HOSTS.has(hostname)) throw unsupported();
   assertTrackingQuery(url);
 

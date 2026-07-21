@@ -1,11 +1,13 @@
 import { isIP } from "node:net";
+import https from "node:https";
 import { AppError } from "@/lib/errors";
+import { resolveSafeAddress } from "@/lib/http/safe-fetch";
 import { validateOutboundHostname } from "@/lib/security/ssrf";
 import { API_ERROR_CODES } from "@/lib/types";
 import {
   canonicalizeTikTokVideoUrl,
   classifyTikTokUrl,
-  isTikTokBoundaryHostname,
+  isTikTokShortRedirectHostname,
   type CanonicalTikTokVideoIdentity,
   type TikTokShortLinkIdentity
 } from "@/lib/extractors/tiktok-url";
@@ -13,6 +15,8 @@ import {
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_REDIRECTS = 3;
+const MAX_RESPONSE_HEADER_BYTES = 16 * 1024;
+export const TIKTOK_SHORT_LINK_USER_AGENT = "VideoSave/1.0 (restricted TikTok short-link resolution)";
 
 export type TikTokResolvedAddress = Readonly<{ address: string; family: 4 | 6 }>;
 
@@ -44,10 +48,10 @@ function extractorFailed(): AppError {
 }
 
 function assertOptions(timeoutMs: number, maxRedirects: number): void {
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > DEFAULT_TIMEOUT_MS) {
     throw new TypeError("TikTok short-link timeout is outside the supported range.");
   }
-  if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0 || maxRedirects > 5) {
+  if (!Number.isSafeInteger(maxRedirects) || maxRedirects < 0 || maxRedirects > DEFAULT_MAX_REDIRECTS) {
     throw new TypeError("TikTok short-link redirect limit is outside the supported range.");
   }
 }
@@ -67,7 +71,7 @@ function redirectTarget(current: URL, location: string | undefined): URL {
     target.username ||
     target.password ||
     target.port ||
-    !isTikTokBoundaryHostname(hostname)
+    !isTikTokShortRedirectHostname(hostname)
   ) {
     throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
   }
@@ -168,6 +172,10 @@ export function createTikTokShortLinkResolver(
         if (response.statusCode === 404 || response.statusCode === 410) {
           throw new AppError(API_ERROR_CODES.CONTENT_UNAVAILABLE);
         }
+        if (response.statusCode === 401) throw new AppError(API_ERROR_CODES.LOGIN_REQUIRED);
+        if (response.statusCode === 403) throw new AppError(API_ERROR_CODES.CAPTCHA_OR_BOT_CHALLENGE);
+        if (response.statusCode === 429) throw new AppError(API_ERROR_CODES.RATE_LIMITED);
+        if (response.statusCode === 451) throw new AppError(API_ERROR_CODES.REGION_RESTRICTED);
         if (!REDIRECT_STATUS.has(response.statusCode)) throw extractorFailed();
         if (redirects === maxRedirects) throw extractorFailed();
         current = redirectTarget(current, response.location);
@@ -183,3 +191,57 @@ export function createTikTokShortLinkResolver(
     }
   };
 }
+
+async function requestShortLinkHead(
+  request: TikTokShortLinkHeadRequest
+): Promise<TikTokShortLinkHeadResponse> {
+  return new Promise<TikTokShortLinkHeadResponse>((resolve, reject) => {
+    if (request.signal.aborted) {
+      reject(extractorFailed());
+      return;
+    }
+    const outbound = https.request(request.url, {
+      method: "HEAD",
+      headers: {
+        "User-Agent": TIKTOK_SHORT_LINK_USER_AGENT,
+        Accept: "text/html,application/xhtml+xml",
+        Connection: "close"
+      },
+      lookup: (_hostname, lookupOptions, callback) => {
+        const all = typeof lookupOptions === "object" && lookupOptions !== null && lookupOptions.all;
+        if (all) {
+          callback(null, [request.address]);
+          return;
+        }
+        callback(null, request.address.address, request.address.family);
+      },
+      maxHeaderSize: MAX_RESPONSE_HEADER_BYTES,
+      timeout: request.timeoutMs
+    }, (response) => {
+      const location = Array.isArray(response.headers.location)
+        ? response.headers.location[0]
+        : response.headers.location;
+      response.destroy();
+      resolve(Object.freeze({
+        statusCode: response.statusCode ?? 0,
+        ...(location ? { location } : {})
+      }));
+    });
+    const abort = () => outbound.destroy(extractorFailed());
+    request.signal.addEventListener("abort", abort, { once: true });
+    outbound.once("close", () => request.signal.removeEventListener("abort", abort));
+    outbound.once("timeout", () => outbound.destroy(extractorFailed()));
+    outbound.once("error", (error) => reject(error));
+    outbound.end();
+  });
+}
+
+/**
+ * Executable cookie-free transport for the restricted metadata checkpoint.
+ * It is intentionally not imported by the production registry or job graph.
+ */
+export const resolveTikTokShortLink = createTikTokShortLinkResolver({
+  resolveAddress: (hostname, timeoutMs, signal) =>
+    resolveSafeAddress(hostname, timeoutMs / 1_000, signal),
+  requestHead: requestShortLinkHead
+});

@@ -14,9 +14,31 @@ import {
 const roots = new Set<string>();
 type XIsExcludedFromExecutablePlatforms = Extract<YtDlpMetadataPlatform, "x"> extends never ? true : false;
 const X_IS_EXCLUDED_FROM_EXECUTABLE_PLATFORMS: XIsExcludedFromExecutablePlatforms = true;
+type TikTokIsExcludedFromExecutablePlatforms = Extract<YtDlpMetadataPlatform, "tiktok"> extends never ? true : false;
+const TIKTOK_IS_EXCLUDED_FROM_EXECUTABLE_PLATFORMS: TikTokIsExcludedFromExecutablePlatforms = true;
 
 it("does not expose RedditIE through the page metadata runner", () => {
   expect("reddit" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
+});
+
+it("does not expose or spawn TikTokIE through the yt-dlp metadata runner", async () => {
+  expect(TIKTOK_IS_EXCLUDED_FROM_EXECUTABLE_PLATFORMS).toBe(true);
+  expect("tiktok" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
+  expect(Object.values(YT_DLP_EXTRACTOR_KEYS).flat()).not.toContain("TikTok");
+  const processRunner = vi.fn();
+  const guardFactory = vi.fn();
+  const runner = createYtDlpMetadataRunner({
+    binaryPath: "/approved/yt-dlp",
+    nodeEnv: "production",
+    processRunner,
+    guardFactory
+  });
+  await expect(runner.extract(
+    "tiktok" as never,
+    new URL("https://www.tiktok.com/@synthetic/video/7000000000000000001")
+  )).rejects.toMatchObject({ code: API_ERROR_CODES.UNSUPPORTED_URL });
+  expect(processRunner).not.toHaveBeenCalled();
+  expect(guardFactory).not.toHaveBeenCalled();
 });
 
 it("does not expose or spawn FacebookIE through the page metadata runner", async () => {
