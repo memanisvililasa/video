@@ -149,7 +149,7 @@ export function createDownloadOrchestrationService(
     }
     const canonicalUrl = canonicalizePlatformSourceInput(request.url, initialValidation.url);
     const extractorId = dependencies.getExtractor(canonicalUrl).id;
-    if (extractorId === "tiktok" || extractorId === "instagram" || extractorId === "facebook") {
+    if (extractorId === "tiktok" || extractorId === "instagram" || extractorId === "facebook" || extractorId === "x") {
       throw new AppError(API_ERROR_CODES.UNSUPPORTED_URL);
     }
     const trustedRequest = Object.freeze({

@@ -40,6 +40,17 @@ describe("personal-use extractor registry", () => {
     });
   });
 
+  it("keeps exactly one disabled X/Twitter placeholder in the production registry", async () => {
+    const placeholders = listExtractors().filter((extractor) => extractor.id === "x");
+    expect(placeholders).toHaveLength(1);
+    const url = new URL("https://x.com/synthetic_user/status/700000000000000001");
+    expect(requireExtractor(url)).toBe(placeholders[0]);
+    await expect(placeholders[0]?.extract(url)).rejects.toMatchObject({
+      code: "UNSUPPORTED_URL",
+      status: 400
+    });
+  });
+
   it.each([
     "https://v.redd.it/abc/DASH_720.mp4",
     "https://video.twimg.com/source/video.webm",

@@ -5,9 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createYtDlpMetadataRunner, mapYtDlpProcessError } from "@/lib/extractors/yt-dlp/runner";
 import { BoundedProcessError, type BoundedProcessRunOptions } from "@/lib/process/bounded-process";
 import { API_ERROR_CODES } from "@/lib/types";
-import { YOUTUBE_PUBLIC_USER_AGENT, YT_DLP_EXTRACTOR_KEYS } from "@/lib/extractors/yt-dlp/contract";
+import {
+  YOUTUBE_PUBLIC_USER_AGENT,
+  YT_DLP_EXTRACTOR_KEYS,
+  type YtDlpMetadataPlatform
+} from "@/lib/extractors/yt-dlp/contract";
 
 const roots = new Set<string>();
+type XIsExcludedFromExecutablePlatforms = Extract<YtDlpMetadataPlatform, "x"> extends never ? true : false;
+const X_IS_EXCLUDED_FROM_EXECUTABLE_PLATFORMS: XIsExcludedFromExecutablePlatforms = true;
 
 it("does not expose RedditIE through the page metadata runner", () => {
   expect("reddit" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
@@ -26,6 +32,26 @@ it("does not expose or spawn FacebookIE through the page metadata runner", async
     new URL("https://www.facebook.com/watch/?v=700000000000001")
   )).rejects.toMatchObject({ code: API_ERROR_CODES.UNSUPPORTED_URL });
   expect(processRunner).not.toHaveBeenCalled();
+});
+
+it("does not expose or spawn TwitterIE through the page metadata runner", async () => {
+  expect(X_IS_EXCLUDED_FROM_EXECUTABLE_PLATFORMS).toBe(true);
+  expect("x" in YT_DLP_EXTRACTOR_KEYS).toBe(false);
+  expect(Object.values(YT_DLP_EXTRACTOR_KEYS).flat()).not.toContain("Twitter");
+  const processRunner = vi.fn();
+  const guardFactory = vi.fn();
+  const runner = createYtDlpMetadataRunner({
+    binaryPath: "/approved/yt-dlp",
+    nodeEnv: "production",
+    processRunner,
+    guardFactory
+  });
+  await expect(runner.extract(
+    "x" as never,
+    new URL("https://x.com/synthetic_user/status/700000000000000001")
+  )).rejects.toMatchObject({ code: API_ERROR_CODES.UNSUPPORTED_URL });
+  expect(processRunner).not.toHaveBeenCalled();
+  expect(guardFactory).not.toHaveBeenCalled();
 });
 
 afterEach(async () => {
