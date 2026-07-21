@@ -129,6 +129,30 @@ describe("safe-fetch redirect policy", () => {
     }
   });
 
+  it("validates any TikTok redirect target against the exact two-host boundary", () => {
+    const hosts = new Set(["v16-webapp-prime.tiktok.com", "v19-webapp-prime.tiktok.com"]);
+    const allowTikTokMedia = (hostname: string) => hosts.has(hostname);
+    expect(getRedirectTarget(
+      new URL("https://v16-webapp-prime.tiktok.com/synthetic/video.mp4?expire=1900000000"),
+      "https://v19-webapp-prime.tiktok.com/synthetic/video.mp4?expire=1900000000",
+      true,
+      allowTikTokMedia
+    ).hostname).toBe("v19-webapp-prime.tiktok.com");
+    for (const target of [
+      "https://www.tiktok.com/synthetic/video.mp4?expire=1900000000",
+      "https://v16-webapp-prime.tiktok.com.attacker.example/video.mp4?expire=1900000000",
+      "https://127.0.0.1/video.mp4?expire=1900000000",
+      "http://v19-webapp-prime.tiktok.com/video.mp4?expire=1900000000"
+    ]) {
+      expect(() => getRedirectTarget(
+        new URL("https://v16-webapp-prime.tiktok.com/synthetic/video.mp4?expire=1900000000"),
+        target,
+        true,
+        allowTikTokMedia
+      )).toThrow(AppError);
+    }
+  });
+
   it.each(["::ffff:127.0.0.1", "::ffff:10.0.0.1", "::ffff:192.168.1.1"])(
     "rejects a redirect literal to mapped unsafe IPv4: %s",
     (address) => expect(() => getRedirectTarget(initial, `https://[${address}]/fixture.mp4`)).toThrow(AppError)

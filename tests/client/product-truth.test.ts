@@ -12,15 +12,18 @@ const productFiles = [
   "components/faq-section.tsx"
 ];
 
+async function source(relative: string): Promise<string> {
+  return readFile(path.join(process.cwd(), relative), "utf8");
+}
+
 describe("personal-use product truth", () => {
   it("describes direct media plus bounded Vimeo/YouTube/Reddit support without stale claims", async () => {
-    const content = (await Promise.all(productFiles.map((relative) =>
-      readFile(path.join(process.cwd(), relative), "utf8")
-    ))).join("\n");
+    const content = (await Promise.all(productFiles.map(source))).join("\n");
     expect(content).not.toMatch(/Этап 2|На Этапе 4|frontend-(?:этап|интерфейс)|skeleton\/stub|будут добавлены/i);
     expect(content).toMatch(/\.mp4/);
     expect(content).toMatch(/\.webm/);
     expect(content).toMatch(/\.mov/);
+    expect(content).toMatch(/прямые публичные HTTPS/i);
     expect(content).toMatch(/не обходит DRM/);
     expect(content).toMatch(/Vimeo/);
     expect(content).toMatch(/публичн(?:ые|ой) одиночн/i);
@@ -47,13 +50,42 @@ describe("personal-use product truth", () => {
     expect(content).not.toMatch(/(?:поддерживает|поддерживаемые)[^\n]{0,80}TikTok/i);
     expect(content).not.toMatch(/(?:поддерживает|поддерживаемые)[^\n]{0,80}Instagram/i);
     expect(content).not.toMatch(/(?:поддерживает|поддерживаемые)[^\n]{0,80}Facebook/i);
+    expect(content).not.toMatch(/(?:поддерживает|поддерживаемые)[^\n]{0,80}X\/Twitter/i);
+    expect(content).toMatch(/t\.co[^\n]{0,100}(?:не поддерживается|unsupported)|(?:не поддерживаются|unsupported)[^\n]{0,100}t\.co/i);
+    expect(content).toMatch(/внешн(?:ие|ий).*Reddit embeds?/i);
+    expect(content).toMatch(/private\/login-required|login-required/i);
+    expect(content).toMatch(/live content|live\/premiere/i);
+    expect(content).toMatch(/playlists?|playlist/i);
+    expect(content).toMatch(/unsupported multi-item/i);
+    expect(content).not.toMatch(/люб(?:ая|ую|ой)\s+платформ|any platform/i);
+    expect(content).toMatch(/не гарантирует[^\n]{0,100}(?:исходн|оригинальн|original)[^\n]{0,40}качеств/i);
+    expect(content).not.toMatch(/(?<!не )гарантирует[^\n]{0,100}(?:исходн|оригинальн|original)[^\n]{0,40}качеств/i);
+    expect(content).not.toMatch(/гарантирует[^\n]{0,100}(?:удаление|отсутствие)[^\n]{0,40}(?:watermark|водян)/i);
+    expect(content).toMatch(/не удаляет водяные знаки/i);
+  });
+
+  it("records the current Stage 8 history and keeps deployment claims fail-closed", async () => {
+    const readme = await source("README.md");
+    for (const stage of ["8.1", "8.2", "8.3", "8.4A", "8.4B", "8.4C", "8.5A", "8.6A", "8.7A", "8.8A", "8.9"]) {
+      expect(readme, `Stage ${stage}`).toContain(stage);
+    }
+    for (const adr of ["ADR 0003", "ADR 0004", "ADR 0005", "ADR 0006"]) {
+      expect(readme, adr).toContain(adr);
+    }
+    expect(readme).toMatch(/Stage 8\.9:\s*Personal-use platform matrix closure/i);
+    expect(readme).toMatch(/8\.5A[^\n]*8\.6A[^\n]*8\.7A[^\n]*8\.8A[^\n]*Accepted NO-GO/i);
+    expect(readme).toMatch(/production deployment не (?:выполнялся|выполнен)/i);
+    expect(readme).toMatch(/не заявляет готовность к публичному multi-user production/i);
+    expect(readme).not.toMatch(/production deployment (?:успешно )?выполнен/i);
+    expect(readme).toMatch(/auto-discovered или user-supplied JS runtimes[^\n]*отключены/i);
+    expect(readme).toMatch(/фиксированный локальный Node binary/i);
   });
 
   it("does not claim or configure Redis for the accepted local/single-host scope", async () => {
     const [environment, config, limiter] = await Promise.all([
-      readFile(path.join(process.cwd(), ".env.example"), "utf8"),
-      readFile(path.join(process.cwd(), "lib/config/env.ts"), "utf8"),
-      readFile(path.join(process.cwd(), "lib/security/rate-limit.ts"), "utf8")
+      source(".env.example"),
+      source("lib/config/env.ts"),
+      source("lib/security/rate-limit.ts")
     ]);
     expect(`${environment}\n${config}\n${limiter}`).not.toMatch(/REDIS_URL|Upstash|redisUrl/);
   });

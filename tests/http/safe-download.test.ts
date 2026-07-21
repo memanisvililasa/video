@@ -90,6 +90,38 @@ describe("atomic safe source download", () => {
     );
   });
 
+  it("forwards only the fixed TikTok media profile and exact-host predicate", async () => {
+    const stream = new PassThrough();
+    const requestDownload = vi.fn(async () => response(stream, 6));
+    const download = createSafeFileDownloader({ requestDownload });
+    const hosts = new Set(["v16-webapp-prime.tiktok.com", "v19-webapp-prime.tiktok.com"]);
+    const allowHostname = (hostname: string) => hosts.has(hostname);
+    const pending = download(
+      new URL("https://v16-webapp-prime.tiktok.com/synthetic/video.mp4?expire=1900000000"),
+      destinationPath,
+      {
+        maxBytes: 10,
+        maxRedirects: 0,
+        requireHttps: true,
+        requestProfile: "tiktok-media-v1",
+        allowHostname
+      }
+    );
+    stream.end("source");
+    await pending;
+    expect(requestDownload).toHaveBeenCalledWith(
+      expect.objectContaining({ hostname: "v16-webapp-prime.tiktok.com" }),
+      expect.objectContaining({
+        maxRedirects: 0,
+        requireHttps: true,
+        requestProfile: "tiktok-media-v1",
+        allowHostname
+      })
+    );
+    expect(allowHostname("www.tiktok.com")).toBe(false);
+    expect(allowHostname("v16-webapp-prime.tiktok.com.attacker.example")).toBe(false);
+  });
+
   it("reports bounded progress only from byte counts and trusted Content-Length", async () => {
     const stream = new PassThrough();
     const progress = vi.fn();

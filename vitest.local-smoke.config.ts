@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     name: "local-smoke",
     environment: "node",
-    include: ["tests/smoke/local-media.smoke.ts"],
+    include: ["tests/smoke/local-media.smoke.ts", "tests/smoke/tiktok-internal-media.smoke.ts"],
     fileParallelism: false,
     maxWorkers: 1,
     restoreMocks: true,

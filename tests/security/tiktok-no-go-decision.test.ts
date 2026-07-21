@@ -106,4 +106,53 @@ describe("Stage 8.10A restricted TikTok metadata decision", () => {
     expect(contract).toMatch(/^\s*vimeo:\s*Object\.freeze\(\["Vimeo"\]\)/m);
     expect(contract).toMatch(/^\s*youtube:\s*Object\.freeze\(\["Youtube"\]\)/m);
   });
+
+  it("records the bounded Stage 8.10B decision without enabling production", async () => {
+    const decision = await source("docs/adr/0008-bounded-tiktok-media-feasibility.md");
+    expect(decision).toMatch(/internal Stage 8\.10B only/);
+    expect(decision).toContain("v16-webapp-prime.tiktok.com");
+    expect(decision).toContain("v19-webapp-prime.tiktok.com");
+    for (const boundary of [
+      "Wildcards", "progressive", "expire", "Referer", "owner-authorized live-download acceptance", "Stage 8.10C"
+    ]) expect(decision, boundary).toContain(boundary);
+    for (const prohibition of [
+      "cookies", "login", "proxying", "impersonation", "yt-dlp", "production registry", "public API"
+    ]) expect(decision.toLowerCase(), prohibition).toContain(prohibition.toLowerCase());
+    expect(decision).not.toMatch(/https?:\/\/(?!www\.tiktok\.com\/)/);
+    expect(decision).not.toMatch(/\b\d{15,24}\b/);
+  });
+
+  it("keeps every Stage 8.10B module outside production composition roots", async () => {
+    const productionFiles = [
+      "app/api/extract/route.ts",
+      "lib/extractors/registry.ts",
+      "lib/extractors/platform-url.ts",
+      "lib/jobs/download-orchestrator.ts",
+      "lib/worker/composition.ts",
+      "lib/worker/processor.ts"
+    ];
+    for (const filename of productionFiles) {
+      const content = await source(filename);
+      expect(content, filename).not.toMatch(/tiktok-(?:media|internal-pipeline)/);
+    }
+    const registry = await source("lib/extractors/registry.ts");
+    expect(registry).not.toMatch(/tiktokMedia|TikTokMedia/);
+    const contract = await source("lib/extractors/yt-dlp/contract.ts");
+    expect(contract).not.toMatch(/^\s*tiktok:/m);
+  });
+
+  it("uses exact host matching and fixed media headers without cookie or browser surfaces", async () => {
+    const policy = await source("lib/extractors/tiktok-media-policy.ts");
+    expect(policy).toContain('"v16-webapp-prime.tiktok.com"');
+    expect(policy).toContain('"v19-webapp-prime.tiktok.com"');
+    expect(policy).toContain("MEDIA_HOST_SET.has");
+    expect(policy).not.toMatch(/endsWith|includes\([^)]*hostname|\*\./);
+
+    const safeFetch = await source("lib/http/safe-fetch.ts");
+    expect(safeFetch).toContain('TIKTOK_MEDIA_REFERER = "https://www.tiktok.com/"');
+    expect(safeFetch).toContain('requestProfile === "tiktok-media-v1"');
+    const media = await source("lib/extractors/tiktok-media.ts");
+    expect(media).toContain('requestProfile: "tiktok-media-v1"');
+    expect(media).not.toMatch(/cookie|authorization|proxy|impersonat|yt-dlp|child_process|execFile|spawn\s*\(/i);
+  });
 });
