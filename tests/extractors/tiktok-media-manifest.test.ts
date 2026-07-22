@@ -8,6 +8,10 @@ import {
 } from "@/lib/extractors/tiktok-media-policy";
 import { canonicalizeTikTokVideoUrl } from "@/lib/extractors/tiktok-url";
 import {
+  createSafeDownloadDiagnosticObserver,
+  type SafeDownloadDiagnosticObserver
+} from "@/lib/http/safe-fetch";
+import {
   SYNTHETIC_TIKTOK_EXPIRE,
   SYNTHETIC_TIKTOK_NOW_MS,
   SYNTHETIC_TIKTOK_OTHER_VIDEO_ID,
@@ -21,8 +25,16 @@ const IDENTITY = canonicalizeTikTokVideoUrl(
   new URL(`https://www.tiktok.com/@synthetic/video/${SYNTHETIC_TIKTOK_VIDEO_ID}`)
 );
 
-function parse(body = syntheticTikTokMediaPage(), nowMs = SYNTHETIC_TIKTOK_NOW_MS) {
-  return parseTikTokMediaManifest(IDENTITY, body, { nowMs, maxFileSizeBytes: 10 * 1024 * 1024 });
+function parse(
+  body = syntheticTikTokMediaPage(),
+  nowMs = SYNTHETIC_TIKTOK_NOW_MS,
+  diagnosticObserver?: SafeDownloadDiagnosticObserver
+) {
+  return parseTikTokMediaManifest(IDENTITY, body, {
+    nowMs,
+    maxFileSizeBytes: 10 * 1024 * 1024,
+    diagnosticObserver
+  });
 }
 
 function safeCode(operation: () => unknown, code: string): void {
@@ -69,6 +81,13 @@ describe("Stage 8.10B TikTok progressive media manifest", () => {
     expect(second).toBe(first);
   });
 
+  it("normalizes JSON-escaped locator separators before validation", () => {
+    const escaped = Buffer.from(syntheticTikTokMediaPage().toString("utf8").replaceAll("&", "\\u0026"));
+    const manifest = parse(escaped);
+    expect(manifest.formats[0]?.locatorReferences).toHaveLength(2);
+    expect(manifest.formats[0]?.locatorReferences.every((reference) => reference.locator.searchParams.has("expire"))).toBe(true);
+  });
+
   it("uses only the two exact media hosts and ignores the known broken page-host locator", () => {
     expect(TIKTOK_MEDIA_HOSTS).toEqual([
       "v16-webapp-prime.tiktok.com",
@@ -99,6 +118,49 @@ describe("Stage 8.10B TikTok progressive media manifest", () => {
     ["inside safety window", syntheticTikTokLocator("v16-webapp-prime.tiktok.com", 1_899_900_020), API_ERROR_CODES.SOURCE_EXPIRED]
   ])("rejects %s expiry", (_label, locator, code) => {
     safeCode(() => parse(syntheticTikTokMediaPage({ locators: [locator] })), code);
+  });
+
+  it("localizes an expired locator after exact-host validation without expiry disclosure", () => {
+    const observer = createSafeDownloadDiagnosticObserver();
+    safeCode(
+      () => parse(
+        syntheticTikTokMediaPage({
+          locators: [syntheticTikTokLocator("v16-webapp-prime.tiktok.com", 1_899_899_999)]
+        }),
+        SYNTHETIC_TIKTOK_NOW_MS,
+        observer
+      ),
+      API_ERROR_CODES.SOURCE_EXPIRED
+    );
+    expect(observer.snapshot().map((event) => event.phase)).toEqual([
+      "locator-validation-started",
+      "locator-validated",
+      "failed"
+    ]);
+    expect(observer.snapshot().at(-1)).toMatchObject({
+      approvedHostname: "v16-webapp-prime.tiktok.com",
+      terminationCategory: "validation",
+      safeErrorCode: API_ERROR_CODES.SOURCE_EXPIRED
+    });
+    expect(JSON.stringify(observer.snapshot())).not.toMatch(/1899899999|expire=|signature|synthetic\/video|https?:\/\//i);
+  });
+
+  it("classifies an unknown locator hostname as unapproved without retaining it", () => {
+    const observer = createSafeDownloadDiagnosticObserver();
+    safeCode(
+      () => parse(
+        syntheticTikTokMediaPage({ locators: [syntheticTikTokLocator("unknown-media.example.test")] }),
+        SYNTHETIC_TIKTOK_NOW_MS,
+        observer
+      ),
+      API_ERROR_CODES.DOWNLOAD_FAILED
+    );
+    expect(observer.snapshot().at(-1)).toMatchObject({
+      approvedHostname: "unapproved",
+      terminationCategory: "validation",
+      safeErrorCode: API_ERROR_CODES.DOWNLOAD_FAILED
+    });
+    expect(JSON.stringify(observer.snapshot())).not.toContain("unknown-media.example.test");
   });
 
   it.each([

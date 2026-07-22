@@ -2,7 +2,6 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { AppError } from "@/lib/errors";
 import {
-  isTikTokMediaHostname,
   validateTikTokMediaLocator,
   type TikTokValidatedLocator
 } from "@/lib/extractors/tiktok-media-policy";
@@ -11,6 +10,7 @@ import {
   type TikTokSafeMetadata
 } from "@/lib/extractors/tiktok-metadata";
 import type { CanonicalTikTokVideoIdentity } from "@/lib/extractors/tiktok-url";
+import type { SafeDownloadDiagnosticObserver } from "@/lib/http/safe-fetch";
 import { API_ERROR_CODES, type ApiErrorCode } from "@/lib/types";
 
 const MAX_PAGE_BYTES = 4 * 1024 * 1024;
@@ -252,7 +252,11 @@ function dimensions(
   return Object.freeze({ width, height });
 }
 
-function parseLocator(value: string, nowMs: number): TikTokValidatedLocator | undefined {
+function parseLocator(
+  value: string,
+  nowMs: number,
+  diagnosticObserver?: SafeDownloadDiagnosticObserver
+): TikTokValidatedLocator | undefined {
   if (!value || value.length > 8_192) throw failure();
   let url: URL;
   try {
@@ -266,8 +270,7 @@ function parseLocator(value: string, nowMs: number): TikTokValidatedLocator | un
   ) throw failure(API_ERROR_CODES.NO_SUPPORTED_FORMAT);
   const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
   if (hostname === "www.tiktok.com") return undefined;
-  if (!isTikTokMediaHostname(hostname)) throw failure(API_ERROR_CODES.DOWNLOAD_FAILED);
-  return validateTikTokMediaLocator(url, nowMs);
+  return validateTikTokMediaLocator(url, nowMs, diagnosticObserver);
 }
 
 function stableId(videoId: string, signature: Readonly<Record<string, unknown>>): string {
@@ -283,7 +286,11 @@ function stableId(videoId: string, signature: Readonly<Record<string, unknown>>)
 export function parseTikTokMediaManifest(
   identity: CanonicalTikTokVideoIdentity,
   pageBody: Buffer,
-  options: Readonly<{ nowMs?: number; maxFileSizeBytes?: number }> = {}
+  options: Readonly<{
+    nowMs?: number;
+    maxFileSizeBytes?: number;
+    diagnosticObserver?: SafeDownloadDiagnosticObserver;
+  }> = {}
 ): TikTokResolvedMediaManifest {
   const nowMs = options.nowMs ?? Date.now();
   const maxFileSizeBytes = options.maxFileSizeBytes ?? MAX_FILESIZE;
@@ -304,7 +311,7 @@ export function parseTikTokMediaManifest(
   const resolved: TikTokResolvedFormat[] = [];
   for (const group of groups(item.video)) {
     const locatorReferences = group.rawLocators
-      .map((value) => parseLocator(value, nowMs))
+      .map((value) => parseLocator(value, nowMs, options.diagnosticObserver))
       .filter((value): value is TikTokValidatedLocator => value !== undefined)
       .map((value) => Object.freeze({ locator: value.url, expiresAtEpochSeconds: value.expiresAtEpochSeconds }));
     const uniqueLocators = [...new Map(locatorReferences.map((reference) => [reference.locator.toString(), reference])).values()]

@@ -8,7 +8,10 @@ import {
   type TikTokMediaDownloadToFile,
   type TikTokMediaPageBodyFetcher
 } from "@/lib/extractors/tiktok-media";
-import type { SafeBodyFetchResult } from "@/lib/http/safe-fetch";
+import {
+  createSafeDownloadDiagnosticObserver,
+  type SafeBodyFetchResult
+} from "@/lib/http/safe-fetch";
 import {
   SYNTHETIC_TIKTOK_EXPIRE,
   SYNTHETIC_TIKTOK_NOW_MS,
@@ -128,12 +131,14 @@ describe("internal TikTok media adapter", () => {
   });
 
   it("redacts transport failures and removes owned destination/partial paths", async () => {
+    const diagnosticObserver = createSafeDownloadDiagnosticObserver();
     const adapter = createTikTokMediaAdapter({
       fetchBody: async () => pageResult(),
       downloadToFile: async () => {
         throw new Error("signed locator https://v16-webapp-prime.tiktok.com/private?expire=secret");
       },
-      now: () => SYNTHETIC_TIKTOK_NOW_MS
+      now: () => SYNTHETIC_TIKTOK_NOW_MS,
+      diagnosticObserver
     });
     const format = (await adapter.analyze(URL_INPUT)).formats[0];
     try {
@@ -146,9 +151,26 @@ describe("internal TikTok media adapter", () => {
     }
     await expect(stat(path.join(workDir, "source.mp4"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(path.join(workDir, "source.mp4.download"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(diagnosticObserver.snapshot().at(-1)).toMatchObject({
+      phase: "failed",
+      approvedHostname: "v16-webapp-prime.tiktok.com",
+      scheme: "https",
+      effectivePort: 443,
+      cleanupResult: "success",
+      safeErrorCode: API_ERROR_CODES.DOWNLOAD_FAILED
+    });
+    const phases = diagnosticObserver.snapshot().map((event) => event.phase);
+    expect(phases).toContain("locator-validation-started");
+    expect(phases).toContain("locator-validated");
+    expect(phases).toContain("expiry-validated");
+    expect(phases).toContain("request-profile-built");
+    expect(JSON.stringify(diagnosticObserver.snapshot())).not.toMatch(
+      /https?:\/\/|private|expire|signature|7000000000000000001|referer|user-agent|headers|body/i
+    );
   });
 
   it("rejects an HTML media response as invalid and cleans the source", async () => {
+    const diagnosticObserver = createSafeDownloadDiagnosticObserver();
     const adapter = createTikTokMediaAdapter({
       fetchBody: async () => pageResult(),
       downloadToFile: async (url) => ({
@@ -158,10 +180,48 @@ describe("internal TikTok media adapter", () => {
         contentType: "text/html",
         sizeBytes: 12
       }),
-      now: () => SYNTHETIC_TIKTOK_NOW_MS
+      now: () => SYNTHETIC_TIKTOK_NOW_MS,
+      diagnosticObserver
     });
     const format = (await adapter.analyze(URL_INPUT)).formats[0];
     await expect(adapter.download(URL_INPUT, format.id, { workDir, processingPreset: "original" }))
       .rejects.toMatchObject({ code: API_ERROR_CODES.OUTPUT_INVALID });
+    expect(diagnosticObserver.snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        phase: "media-container-validation-started",
+        contentCategory: "unknown"
+      }),
+      expect.objectContaining({
+        phase: "failed",
+        terminationCategory: "validation",
+        safeErrorCode: API_ERROR_CODES.OUTPUT_INVALID
+      })
+    ]));
+  });
+
+  it("records media/container validation completion without changing the returned DTO", async () => {
+    const diagnosticObserver = createSafeDownloadDiagnosticObserver();
+    const adapter = createTikTokMediaAdapter({
+      fetchBody: async () => pageResult(),
+      downloadToFile: async (url) => ({
+        finalUrl: url,
+        statusCode: 200,
+        headers: {},
+        contentType: "application/mp4",
+        sizeBytes: 7
+      }),
+      now: () => SYNTHETIC_TIKTOK_NOW_MS,
+      diagnosticObserver
+    });
+    const format = (await adapter.analyze(URL_INPUT)).formats[0];
+    const downloaded = await adapter.download(URL_INPUT, format.id, { workDir, processingPreset: "original" });
+    expect(downloaded).toMatchObject({ filename: "tiktok-video.mp4", contentType: "video/mp4", sizeBytes: 7 });
+    expect(Object.keys(downloaded).sort()).toEqual(["contentType", "filename", "format", "path", "sizeBytes"].sort());
+    expect(diagnosticObserver.snapshot().at(-1)).toMatchObject({
+      phase: "media-container-validation-completed",
+      terminationCategory: "success",
+      safeErrorCode: "none"
+    });
+    expect(JSON.stringify(downloaded.format)).not.toMatch(/https?:\/\/|expire|signature|7000000000000000001/i);
   });
 });

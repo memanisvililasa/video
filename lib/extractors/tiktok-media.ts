@@ -23,8 +23,10 @@ import type { DownloadContext, DownloadedSource, ExtractorContext } from "@/lib/
 import {
   safeDownloadToFile,
   safeFetchBody,
+  recordSafeDownloadDiagnostic,
   type SafeBodyFetchOptions,
   type SafeBodyFetchResult,
+  type SafeDownloadDiagnosticObserver,
   type SafeDownloadOptions,
   type SafeDownloadResult
 } from "@/lib/http/safe-fetch";
@@ -74,6 +76,8 @@ export type CreateTikTokMediaAdapterOptions = Readonly<{
   resolveShortLink?: TikTokMediaShortLinkResolution;
   downloadToFile?: TikTokMediaDownloadToFile;
   now?: () => number;
+  /** @internal Ephemeral, in-memory structural evidence only. */
+  diagnosticObserver?: SafeDownloadDiagnosticObserver;
 }>;
 
 function safeError(code: ApiErrorCode = API_ERROR_CODES.EXTRACTOR_FAILED): AppError {
@@ -166,7 +170,11 @@ export function createTikTokMediaAdapter(options: CreateTikTokMediaAdapterOption
   const downloadToFile = options.downloadToFile ?? safeDownloadToFile;
   const now = options.now ?? Date.now;
 
-  async function fresh(url: URL, context?: ExtractorContext): Promise<TikTokResolvedMediaManifest> {
+  async function fresh(
+    url: URL,
+    context?: ExtractorContext,
+    diagnosticObserver?: SafeDownloadDiagnosticObserver
+  ): Promise<TikTokResolvedMediaManifest> {
     try {
       const classified = classifyTikTokUrl(url);
       const identity = classified.sourceKind === "short-link"
@@ -193,7 +201,8 @@ export function createTikTokMediaAdapter(options: CreateTikTokMediaAdapterOption
       if (finalIdentity.videoId !== canonical.videoId) throw safeError();
       const manifest = parseTikTokMediaManifest(canonical, page.body, {
         nowMs: now(),
-        maxFileSizeBytes: maximumBytes(context)
+        maxFileSizeBytes: maximumBytes(context),
+        diagnosticObserver
       });
       if (
         context?.maxDurationSeconds !== undefined &&
@@ -225,12 +234,15 @@ export function createTikTokMediaAdapter(options: CreateTikTokMediaAdapterOption
         if (context.processingPreset && context.processingPreset !== "original" && context.processingPreset !== "compatible-mp4") {
           throw safeError(API_ERROR_CODES.NO_SUPPORTED_FORMAT);
         }
-        const resolved = await fresh(url, context);
+        const resolved = await fresh(url, context, options.diagnosticObserver);
         const selected = resolved.formats.find((format) => format.descriptor.id === formatId);
         if (!selected) throw safeError(API_ERROR_CODES.SOURCE_EXPIRED);
         const reference = selected.locatorReferences[0];
         if (!reference) throw safeError(API_ERROR_CODES.SOURCE_EXPIRED);
-        const locator = validateTikTokMediaLocator(reference.locator, now());
+        const locator = validateTikTokMediaLocator(reference.locator, now(), options.diagnosticObserver);
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "request-profile-built"
+        });
         const result = await downloadToFile(locator.url, destinationPath, {
           maxBytes: maximumBytes(context),
           timeoutSeconds: timeoutSeconds(context.downloadTimeoutSeconds, DEFAULT_DOWNLOAD_TIMEOUT_SECONDS, 120),
@@ -239,10 +251,18 @@ export function createTikTokMediaAdapter(options: CreateTikTokMediaAdapterOption
           requestProfile: "tiktok-media-v1",
           allowHostname: isTikTokMediaHostname,
           signal: context.signal,
-          onProgress: context.onDownloadProgress
+          onProgress: context.onDownloadProgress,
+          diagnosticObserver: options.diagnosticObserver
         });
-        validateTikTokMediaLocator(result.finalUrl, now());
+        validateTikTokMediaLocator(result.finalUrl, now(), options.diagnosticObserver);
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "media-container-validation-started"
+        });
         assertMediaContentType(result.contentType);
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "media-container-validation-completed",
+          terminationCategory: "success"
+        });
         return Object.freeze({
           path: destinationPath,
           filename: "tiktok-video.mp4",
@@ -251,11 +271,32 @@ export function createTikTokMediaAdapter(options: CreateTikTokMediaAdapterOption
           format: selected.descriptor
         });
       } catch (error) {
-        await Promise.all([
+        const cleanup = await Promise.all([
           rm(destinationPath, { force: true }),
           rm(`${destinationPath}.download`, { force: true })
-        ].map((operation) => operation.catch(() => undefined)));
-        throw mapError(error, context.signal, API_ERROR_CODES.DOWNLOAD_FAILED);
+        ].map((operation) => operation.then(() => true, () => false)));
+        const cleanupResult = cleanup.every(Boolean) ? "success" : "failure";
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "cleanup-completed",
+          cleanupResult,
+          terminationCategory: cleanupResult === "success" ? "unknown" : "cleanup"
+        });
+        const safe = mapError(error, context.signal, API_ERROR_CODES.DOWNLOAD_FAILED);
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "failed",
+          cleanupResult,
+          terminationCategory: context.signal?.aborted
+            ? "cancelled"
+            : cleanupResult === "failure"
+              ? "cleanup"
+              : safe.code === API_ERROR_CODES.FILE_TOO_LARGE
+                ? "byte-limit"
+                : safe.code === API_ERROR_CODES.OUTPUT_INVALID || safe.code === API_ERROR_CODES.SOURCE_EXPIRED
+                  ? "validation"
+                  : "unknown",
+          safeErrorCode: safe.code
+        });
+        throw safe;
       }
     }
   });

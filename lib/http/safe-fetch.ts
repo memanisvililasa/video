@@ -7,7 +7,7 @@ import { Transform, Writable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { isIP } from "node:net";
 import { AppError } from "@/lib/errors";
-import { API_ERROR_CODES } from "@/lib/types";
+import { API_ERROR_CODES, type ApiErrorCode } from "@/lib/types";
 import { validateOutboundHostname, validateRedirectHostname } from "@/lib/security/ssrf";
 import {
   YOUTUBE_PUBLIC_ACCEPT,
@@ -41,6 +41,8 @@ export type SafeFetchOptions = {
   requestProfile?: "default" | "youtube-public-v1" | "reddit-public-v1" | "reddit-media-v1" | "tiktok-public-page-v1" | "tiktok-media-v1";
   allowHostname?: (hostname: string) => boolean;
   signal?: AbortSignal;
+  /** @internal Safe, in-memory evidence for an owner-authorized diagnostic run. */
+  diagnosticObserver?: SafeDownloadDiagnosticObserver;
 };
 
 export type SafeResponseMetadata = {
@@ -70,6 +72,9 @@ export type SafeBodyFetchResult = SafeResponseMetadata & {
 };
 
 type RequestMethod = "HEAD" | "GET";
+type ResolvedSafeFetchOptions = Omit<Required<SafeFetchOptions>, "diagnosticObserver"> & {
+  diagnosticObserver?: SafeDownloadDiagnosticObserver;
+};
 
 export type SafeDownloadStreamResult = SafeResponseMetadata & {
   stream?: http.IncomingMessage;
@@ -79,6 +84,9 @@ type RequestResult = SafeDownloadStreamResult;
 
 export type SafeFileDownloaderDependencies = {
   requestDownload: (url: URL, options: SafeFetchOptions) => Promise<SafeDownloadStreamResult>;
+  linkFile?: (sourcePath: string, destinationPath: string) => Promise<void>;
+  unlinkFile?: (filePath: string) => Promise<void>;
+  removeFile?: (filePath: string) => Promise<void>;
 };
 
 export type SafeBodyFetcherDependencies = {
@@ -92,6 +100,233 @@ type RequestLookupOptions = {
 type RequestLookupCallback = (error: NodeJS.ErrnoException | null, address: string | Array<{ address: string; family: 4 | 6 }>, family?: 4 | 6) => void;
 type SafeLookupAddress = Readonly<{ address: string; family: number }>;
 type SafeAddressLookup = (hostname: string) => Promise<readonly SafeLookupAddress[]>;
+
+export type SafeDownloadDiagnosticPhase =
+  | "locator-validation-started"
+  | "locator-validated"
+  | "expiry-validated"
+  | "request-profile-built"
+  | "dns-ip-validation-completed"
+  | "media-request-started"
+  | "redirect-evaluated"
+  | "response-received"
+  | "http-status-classified"
+  | "content-type-classified"
+  | "body-streaming-started"
+  | "byte-budget-evaluated"
+  | "body-streaming-completed"
+  | "temporary-file-finalized"
+  | "media-container-validation-started"
+  | "media-container-validation-completed"
+  | "cleanup-completed"
+  | "failed";
+
+export type SafeDownloadDiagnosticHostname =
+  | "v16-webapp-prime.tiktok.com"
+  | "v19-webapp-prime.tiktok.com"
+  | "unapproved"
+  | "none";
+export type SafeDownloadDiagnosticScheme = "https" | "http" | "other" | "unknown";
+export type SafeDownloadDiagnosticPort = 443 | 80 | "custom" | "unknown";
+export type SafeDownloadDiagnosticStatusClass = "2xx" | "3xx" | "4xx" | "5xx" | "no-response" | "unknown";
+export type SafeDownloadDiagnosticContentCategory = "video" | "binary" | "html" | "json" | "text" | "empty" | "missing" | "unknown";
+export type SafeDownloadDiagnosticBytesCategory = "zero" | "small" | "within-budget" | "at-limit" | "over-limit" | "unknown";
+export type SafeDownloadDiagnosticTermination =
+  | "success"
+  | "timeout"
+  | "cancelled"
+  | "network"
+  | "redirect-rejected"
+  | "response-rejected"
+  | "byte-limit"
+  | "filesystem"
+  | "validation"
+  | "cleanup"
+  | "unknown";
+export type SafeDownloadDiagnosticCleanup = "not-required" | "success" | "failure" | "unknown";
+
+export type SafeDownloadDiagnosticEvent = Readonly<{
+  phase: SafeDownloadDiagnosticPhase;
+  requestCount: number;
+  approvedHostname: SafeDownloadDiagnosticHostname;
+  scheme: SafeDownloadDiagnosticScheme;
+  effectivePort: SafeDownloadDiagnosticPort;
+  redirectCount: number;
+  statusClass: SafeDownloadDiagnosticStatusClass;
+  contentCategory: SafeDownloadDiagnosticContentCategory;
+  contentLengthPresent: "yes" | "no" | "unknown";
+  boundedBytesCategory: SafeDownloadDiagnosticBytesCategory;
+  terminationCategory: SafeDownloadDiagnosticTermination;
+  cleanupResult: SafeDownloadDiagnosticCleanup;
+  safeErrorCode: ApiErrorCode | "none";
+}>;
+
+const SAFE_DOWNLOAD_DIAGNOSTIC_BRAND: unique symbol = Symbol("safe-download-diagnostic");
+
+export type SafeDownloadDiagnosticObserver = Readonly<{
+  snapshot(): readonly SafeDownloadDiagnosticEvent[];
+  readonly [SAFE_DOWNLOAD_DIAGNOSTIC_BRAND]: true;
+}>;
+
+export type SafeDownloadDiagnosticUpdate = Readonly<{
+  phase: SafeDownloadDiagnosticPhase;
+  requestCount?: number;
+  approvedHostname?: SafeDownloadDiagnosticHostname;
+  scheme?: SafeDownloadDiagnosticScheme;
+  effectivePort?: SafeDownloadDiagnosticPort;
+  redirectCount?: number;
+  statusClass?: SafeDownloadDiagnosticStatusClass;
+  contentCategory?: SafeDownloadDiagnosticContentCategory;
+  contentLengthPresent?: "yes" | "no" | "unknown";
+  boundedBytesCategory?: SafeDownloadDiagnosticBytesCategory;
+  terminationCategory?: SafeDownloadDiagnosticTermination;
+  cleanupResult?: SafeDownloadDiagnosticCleanup;
+  safeErrorCode?: ApiErrorCode | "none";
+}>;
+
+type SafeDownloadDiagnosticStore = {
+  events: SafeDownloadDiagnosticEvent[];
+};
+
+const SAFE_DOWNLOAD_DIAGNOSTIC_STORES = new WeakMap<object, SafeDownloadDiagnosticStore>();
+
+function lastSafeDownloadDiagnosticEvent(
+  observer: SafeDownloadDiagnosticObserver | undefined
+): SafeDownloadDiagnosticEvent | undefined {
+  return observer ? SAFE_DOWNLOAD_DIAGNOSTIC_STORES.get(observer)?.events.at(-1) : undefined;
+}
+
+function isSafeDownloadDiagnosticObserver(
+  observer: SafeDownloadDiagnosticObserver | undefined
+): boolean {
+  return observer ? SAFE_DOWNLOAD_DIAGNOSTIC_STORES.has(observer) : false;
+}
+
+function hasSafeDownloadDiagnosticPhase(
+  observer: SafeDownloadDiagnosticObserver | undefined,
+  phase: SafeDownloadDiagnosticPhase,
+  requestCount: number
+): boolean {
+  return observer
+    ? SAFE_DOWNLOAD_DIAGNOSTIC_STORES.get(observer)?.events.some(
+      (event) => event.phase === phase && event.requestCount === requestCount
+    ) ?? false
+    : false;
+}
+
+/** @internal Creates a non-I/O collector; arbitrary callback observers are not accepted. */
+export function createSafeDownloadDiagnosticObserver(): SafeDownloadDiagnosticObserver {
+  const observer = Object.freeze({
+    [SAFE_DOWNLOAD_DIAGNOSTIC_BRAND]: true as const,
+    snapshot(): readonly SafeDownloadDiagnosticEvent[] {
+      const store = SAFE_DOWNLOAD_DIAGNOSTIC_STORES.get(observer);
+      return Object.freeze([...(store?.events ?? [])]);
+    }
+  });
+  SAFE_DOWNLOAD_DIAGNOSTIC_STORES.set(observer, { events: [] });
+  return observer;
+}
+
+function boundedDiagnosticCount(value: number | undefined, fallback: number): number {
+  return Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= 1_000
+    ? value as number
+    : fallback;
+}
+
+/** @internal Records only closed, structural fields and silently ignores foreign observers. */
+export function recordSafeDownloadDiagnostic(
+  observer: SafeDownloadDiagnosticObserver | undefined,
+  update: SafeDownloadDiagnosticUpdate
+): void {
+  if (!observer) return;
+  const store = SAFE_DOWNLOAD_DIAGNOSTIC_STORES.get(observer);
+  if (!store) return;
+  const previous = store.events.at(-1);
+  const event: SafeDownloadDiagnosticEvent = Object.freeze({
+    phase: update.phase,
+    requestCount: boundedDiagnosticCount(update.requestCount, previous?.requestCount ?? 0),
+    approvedHostname: update.approvedHostname ?? previous?.approvedHostname ?? "none",
+    scheme: update.scheme ?? previous?.scheme ?? "unknown",
+    effectivePort: update.effectivePort ?? previous?.effectivePort ?? "unknown",
+    redirectCount: boundedDiagnosticCount(update.redirectCount, previous?.redirectCount ?? 0),
+    statusClass: update.statusClass ?? previous?.statusClass ?? "no-response",
+    contentCategory: update.contentCategory ?? previous?.contentCategory ?? "unknown",
+    contentLengthPresent: update.contentLengthPresent ?? previous?.contentLengthPresent ?? "unknown",
+    boundedBytesCategory: update.boundedBytesCategory ?? previous?.boundedBytesCategory ?? "unknown",
+    terminationCategory: update.terminationCategory ?? previous?.terminationCategory ?? "unknown",
+    cleanupResult: update.cleanupResult ?? previous?.cleanupResult ?? "not-required",
+    safeErrorCode: update.safeErrorCode ?? previous?.safeErrorCode ?? "none"
+  });
+  if (
+    previous &&
+    previous.phase === event.phase &&
+    previous.requestCount === event.requestCount &&
+    previous.redirectCount === event.redirectCount &&
+    previous.statusClass === event.statusClass &&
+    previous.contentCategory === event.contentCategory &&
+    previous.contentLengthPresent === event.contentLengthPresent &&
+    previous.boundedBytesCategory === event.boundedBytesCategory &&
+    previous.terminationCategory === event.terminationCategory &&
+    previous.cleanupResult === event.cleanupResult &&
+    previous.safeErrorCode === event.safeErrorCode
+  ) return;
+  if (store.events.length >= 256) return;
+  store.events.push(event);
+}
+
+/** @internal Closed classifications used by safe diagnostic events and deterministic tests. */
+export function classifySafeDownloadStatus(statusCode: number | undefined): SafeDownloadDiagnosticStatusClass {
+  if (statusCode === undefined || statusCode === 0) return "no-response";
+  if (!Number.isSafeInteger(statusCode) || statusCode < 100 || statusCode > 599) return "unknown";
+  return `${Math.floor(statusCode / 100)}xx` as SafeDownloadDiagnosticStatusClass;
+}
+
+/** @internal Never returns the raw Content-Type value. */
+export function classifySafeDownloadContent(contentType: string | undefined): SafeDownloadDiagnosticContentCategory {
+  if (contentType === undefined) return "missing";
+  const normalized = contentType.trim().toLowerCase().split(";", 1)[0]?.trim() ?? "";
+  if (!normalized) return "empty";
+  if (normalized.startsWith("video/")) return "video";
+  if (normalized === "application/mp4" || normalized === "application/octet-stream") return "binary";
+  if (normalized === "text/html" || normalized === "application/xhtml+xml") return "html";
+  if (normalized === "application/json" || normalized.endsWith("+json")) return "json";
+  if (normalized.startsWith("text/")) return "text";
+  return "unknown";
+}
+
+/** @internal Converts byte counts to bounded evidence only. */
+export function classifySafeDownloadBytes(sizeBytes: number, maxBytes: number): SafeDownloadDiagnosticBytesCategory {
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes < 0 || !Number.isSafeInteger(maxBytes) || maxBytes < 1) return "unknown";
+  if (sizeBytes === 0) return "zero";
+  if (sizeBytes > maxBytes) return "over-limit";
+  if (sizeBytes === maxBytes) return "at-limit";
+  if (sizeBytes <= 64 * 1024) return "small";
+  return "within-budget";
+}
+
+/** @internal Returns transport fields without retaining any hostname, path, or query. */
+export function classifySafeDownloadTransport(url: URL): Readonly<{
+  scheme: SafeDownloadDiagnosticScheme;
+  effectivePort: SafeDownloadDiagnosticPort;
+}> {
+  const scheme: SafeDownloadDiagnosticScheme = url.protocol === "https:"
+    ? "https"
+    : url.protocol === "http:"
+      ? "http"
+      : "other";
+  const effectivePort: SafeDownloadDiagnosticPort = url.port
+    ? url.port === "443"
+      ? 443
+      : url.port === "80"
+        ? 80
+        : "custom"
+    : scheme === "https"
+      ? 443
+      : scheme === "http"
+        ? 80
+        : "unknown";
+  return Object.freeze({ scheme, effectivePort });
+}
 
 function assertSafeUrl(
   url: URL,
@@ -232,9 +467,36 @@ function createAbortError(): AppError {
   return new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Запрос к источнику был остановлен.", 502);
 }
 
-async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders, options: Required<SafeFetchOptions>): Promise<RequestResult> {
+function diagnosticErrorCode(error: unknown, fallback: ApiErrorCode): ApiErrorCode {
+  return error instanceof AppError ? error.code : fallback;
+}
+
+function diagnosticTermination(
+  error: unknown,
+  signal: AbortSignal,
+  fallback: SafeDownloadDiagnosticTermination
+): SafeDownloadDiagnosticTermination {
+  if (signal.aborted) return "cancelled";
+  if (error instanceof AppError) {
+    if (error.status === 504 || error.code === API_ERROR_CODES.EXTRACTOR_TIMEOUT) return "timeout";
+    if (error.code === API_ERROR_CODES.FILE_TOO_LARGE) return "byte-limit";
+    if (error.code === API_ERROR_CODES.OUTPUT_INVALID || error.code === API_ERROR_CODES.SOURCE_EXPIRED) return "validation";
+  }
+  return fallback;
+}
+
+async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders, options: ResolvedSafeFetchOptions): Promise<RequestResult> {
   assertSafeUrl(url, false, options.requireHttps, options.allowHostname);
   const resolved = await resolveSafeAddress(url.hostname, options.timeoutSeconds, options.signal);
+  const requestCount = lastSafeDownloadDiagnosticEvent(options.diagnosticObserver)?.requestCount ?? 1;
+  recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+    phase: "dns-ip-validation-completed",
+    requestCount
+  });
+  recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+    phase: "media-request-started",
+    requestCount
+  });
 
   return new Promise<RequestResult>((resolve, reject) => {
     if (options.signal.aborted) {
@@ -294,12 +556,21 @@ async function requestOnce(url: URL, method: RequestMethod, headers: SafeHeaders
       },
       (response) => {
         const normalizedHeaders = normalizeHeaders(response.headers);
+        const contentType = normalizedHeaders["content-type"]?.split(";")[0]?.trim().toLowerCase();
+        const contentLength = parseContentLength(normalizedHeaders["content-length"]);
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "response-received",
+          requestCount,
+          statusClass: classifySafeDownloadStatus(response.statusCode),
+          contentCategory: classifySafeDownloadContent(contentType),
+          contentLengthPresent: contentLength === undefined ? "no" : "yes"
+        });
         resolve({
           finalUrl: url,
           statusCode: response.statusCode ?? 0,
           headers: normalizedHeaders,
-          contentType: normalizedHeaders["content-type"]?.split(";")[0]?.trim().toLowerCase(),
-          contentLength: parseContentLength(normalizedHeaders["content-length"]),
+          contentType,
+          contentLength,
           stream: response
         });
       }
@@ -334,39 +605,113 @@ async function requestWithRedirects(
   headers: SafeHeaders,
   options: SafeFetchOptions
 ): Promise<RequestResult> {
-  const requestOptions: Required<SafeFetchOptions> = {
+  const requestOptions: ResolvedSafeFetchOptions = {
     timeoutSeconds: options.timeoutSeconds ?? DEFAULT_METADATA_TIMEOUT_SECONDS,
     maxRedirects: options.maxRedirects ?? DEFAULT_MAX_REDIRECTS,
     requireHttps: options.requireHttps ?? false,
     requestProfile: options.requestProfile ?? "default",
     allowHostname: options.allowHostname ?? (() => true),
-    signal: options.signal ?? new AbortController().signal
+    signal: options.signal ?? new AbortController().signal,
+    diagnosticObserver: options.diagnosticObserver
   };
+  const transport = classifySafeDownloadTransport(initialUrl);
+  recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+    phase: "request-profile-built",
+    requestCount: 1,
+    ...transport
+  });
 
-  let currentUrl = assertSafeUrl(
-    new URL(initialUrl.toString()),
-    false,
-    requestOptions.requireHttps,
-    requestOptions.allowHostname
-  );
+  let currentUrl: URL;
+  try {
+    currentUrl = assertSafeUrl(
+      new URL(initialUrl.toString()),
+      false,
+      requestOptions.requireHttps,
+      requestOptions.allowHostname
+    );
+  } catch (error) {
+    recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+      phase: "failed",
+      terminationCategory: "validation",
+      safeErrorCode: diagnosticErrorCode(error, API_ERROR_CODES.EXTRACTION_FAILED)
+    });
+    throw error;
+  }
   for (let redirectCount = 0; redirectCount <= requestOptions.maxRedirects; redirectCount += 1) {
-    const result = await requestOnce(currentUrl, method, headers, requestOptions);
+    if (redirectCount > 0) {
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "request-profile-built",
+        requestCount: redirectCount + 1,
+        redirectCount,
+        ...classifySafeDownloadTransport(currentUrl)
+      });
+    }
+    let result: RequestResult;
+    try {
+      result = await requestOnce(currentUrl, method, headers, requestOptions);
+    } catch (error) {
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "failed",
+        requestCount: redirectCount + 1,
+        redirectCount,
+        terminationCategory: diagnosticTermination(error, requestOptions.signal, "network"),
+        safeErrorCode: diagnosticErrorCode(error, API_ERROR_CODES.EXTRACTION_FAILED)
+      });
+      throw error;
+    }
 
     if (!isRedirectStatus(result.statusCode)) {
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "http-status-classified",
+        requestCount: redirectCount + 1,
+        redirectCount,
+        statusClass: classifySafeDownloadStatus(result.statusCode)
+      });
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "content-type-classified",
+        requestCount: redirectCount + 1,
+        redirectCount,
+        contentCategory: classifySafeDownloadContent(result.contentType),
+        contentLengthPresent: result.contentLength === undefined ? "no" : "yes"
+      });
       return result;
     }
 
     result.stream?.destroy();
+    recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+      phase: "redirect-evaluated",
+      requestCount: redirectCount + 1,
+      redirectCount: redirectCount + 1,
+      statusClass: "3xx"
+    });
     if (redirectCount === requestOptions.maxRedirects) {
-      throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
+      const error = new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "failed",
+        requestCount: redirectCount + 1,
+        redirectCount: redirectCount + 1,
+        terminationCategory: "redirect-rejected",
+        safeErrorCode: error.code
+      });
+      throw error;
     }
-
-    currentUrl = getRedirectTarget(
-      currentUrl,
-      result.headers.location,
-      requestOptions.requireHttps,
-      requestOptions.allowHostname
-    );
+    try {
+      currentUrl = getRedirectTarget(
+        currentUrl,
+        result.headers.location,
+        requestOptions.requireHttps,
+        requestOptions.allowHostname
+      );
+    } catch (error) {
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "failed",
+        requestCount: redirectCount + 1,
+        redirectCount: redirectCount + 1,
+        terminationCategory: "redirect-rejected",
+        safeErrorCode: diagnosticErrorCode(error, API_ERROR_CODES.EXTRACTION_FAILED)
+      });
+      throw error;
+    }
   }
 
   throw new AppError(API_ERROR_CODES.EXTRACTION_FAILED, "Источник вернул слишком много redirect-ов.", 502);
@@ -471,72 +816,163 @@ export function createSafeFileDownloader(dependencies: SafeFileDownloaderDepende
     options: SafeDownloadOptions
   ): Promise<SafeDownloadResult> {
     const signal = options.signal ?? new AbortController().signal;
-    const result = await dependencies.requestDownload(url, {
-      timeoutSeconds: options.timeoutSeconds ?? DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
-      maxRedirects: options.maxRedirects,
-      requireHttps: options.requireHttps,
-      requestProfile: options.requestProfile,
-      allowHostname: options.allowHostname,
-      signal
-    });
-
-    assertReadableStatus(result);
-
-    if (typeof result.contentLength === "number" && result.contentLength > options.maxBytes) {
-      result.stream?.destroy();
-      throw new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413);
-    }
-
-    const stream = result.stream;
-    if (!stream) {
-      throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник не вернул тело файла.", 502);
-    }
-
     const partialPath = `${destinationPath}.download`;
-    const file = createWriteStream(partialPath, { flags: "wx" });
-    const totalBytes = result.contentLength;
+    const linkFile = dependencies.linkFile ?? link;
+    const unlinkFile = dependencies.unlinkFile ?? unlink;
+    const removeFile = dependencies.removeFile ?? ((filePath: string) => rm(filePath, { force: true }));
+    let result: SafeDownloadStreamResult | undefined;
+    let stream: http.IncomingMessage | undefined;
+    let file: ReturnType<typeof createWriteStream> | undefined;
     let sizeBytes = 0;
     let finalOwned = false;
     let partialOwned = false;
-    file.once("open", () => {
-      partialOwned = true;
-    });
-    const meter = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        sizeBytes += chunk.length;
-        if (sizeBytes > options.maxBytes) {
-          callback(new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413));
-          return;
-        }
-        try {
-          options.onProgress?.(sizeBytes, totalBytes);
-        } catch {
-          // Progress observers must not affect download integrity.
-        }
-        callback(null, chunk);
-      }
-    });
+    let temporaryFinalizationStarted = false;
 
     try {
+      result = await dependencies.requestDownload(url, {
+        timeoutSeconds: options.timeoutSeconds ?? DEFAULT_DOWNLOAD_TIMEOUT_SECONDS,
+        maxRedirects: options.maxRedirects,
+        requireHttps: options.requireHttps,
+        requestProfile: options.requestProfile,
+        allowHostname: options.allowHostname,
+        signal,
+        diagnosticObserver: options.diagnosticObserver
+      });
+      const requestCount = lastSafeDownloadDiagnosticEvent(options.diagnosticObserver)?.requestCount ?? 1;
+      if (!hasSafeDownloadDiagnosticPhase(options.diagnosticObserver, "response-received", requestCount)) {
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "response-received",
+          requestCount,
+          statusClass: classifySafeDownloadStatus(result.statusCode),
+          contentCategory: classifySafeDownloadContent(result.contentType),
+          contentLengthPresent: result.contentLength === undefined ? "no" : "yes"
+        });
+      }
+      if (!hasSafeDownloadDiagnosticPhase(options.diagnosticObserver, "http-status-classified", requestCount)) {
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "http-status-classified",
+          requestCount,
+          statusClass: classifySafeDownloadStatus(result.statusCode)
+        });
+      }
+      assertReadableStatus(result);
+      if (!hasSafeDownloadDiagnosticPhase(options.diagnosticObserver, "content-type-classified", requestCount)) {
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "content-type-classified",
+          requestCount,
+          contentCategory: classifySafeDownloadContent(result.contentType),
+          contentLengthPresent: result.contentLength === undefined ? "no" : "yes"
+        });
+      }
+
+      if (typeof result.contentLength === "number" && result.contentLength > options.maxBytes) {
+        result.stream?.destroy();
+        recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+          phase: "byte-budget-evaluated",
+          boundedBytesCategory: "over-limit"
+        });
+        throw new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413);
+      }
+
+      stream = result.stream;
+      if (!stream) {
+        throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник не вернул тело файла.", 502);
+      }
+
+      file = createWriteStream(partialPath, { flags: "wx" });
+      const totalBytes = result.contentLength;
+      file.once("open", () => {
+        partialOwned = true;
+      });
+      const meter = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          sizeBytes += chunk.length;
+          if (isSafeDownloadDiagnosticObserver(options.diagnosticObserver)) {
+            recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+              phase: "byte-budget-evaluated",
+              boundedBytesCategory: classifySafeDownloadBytes(sizeBytes, options.maxBytes)
+            });
+          }
+          if (sizeBytes > options.maxBytes) {
+            callback(new AppError(API_ERROR_CODES.FILE_TOO_LARGE, "Файл превышает допустимый размер.", 413));
+            return;
+          }
+          try {
+            options.onProgress?.(sizeBytes, totalBytes);
+          } catch {
+            // Progress observers must not affect download integrity.
+          }
+          callback(null, chunk);
+        }
+      });
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "body-streaming-started",
+        boundedBytesCategory: "zero"
+      });
       await pipeline(stream, meter, file, { signal });
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "body-streaming-completed",
+        boundedBytesCategory: classifySafeDownloadBytes(sizeBytes, options.maxBytes)
+      });
       if (sizeBytes <= 0 || (totalBytes !== undefined && sizeBytes !== totalBytes)) {
         throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Источник вернул неполный медиафайл.", 502);
       }
 
-      await link(partialPath, destinationPath);
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "byte-budget-evaluated",
+        boundedBytesCategory: classifySafeDownloadBytes(sizeBytes, options.maxBytes)
+      });
+      temporaryFinalizationStarted = true;
+      await linkFile(partialPath, destinationPath);
       finalOwned = true;
-      await unlink(partialPath);
+      await unlinkFile(partialPath);
+      partialOwned = false;
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "temporary-file-finalized",
+        boundedBytesCategory: classifySafeDownloadBytes(sizeBytes, options.maxBytes),
+        terminationCategory: "success"
+      });
     } catch (error) {
-      file.destroy();
-      stream.destroy();
-      if (partialOwned) await rm(partialPath, { force: true }).catch(() => undefined);
-      if (finalOwned) await rm(destinationPath, { force: true }).catch(() => undefined);
-      if (signal.aborted) throw createAbortError();
-      throw error instanceof AppError
+      file?.destroy();
+      stream?.destroy();
+      let cleanupResult: SafeDownloadDiagnosticCleanup = "not-required";
+      if (partialOwned || finalOwned) {
+        const cleanup = await Promise.all([
+          partialOwned ? removeFile(partialPath) : Promise.resolve(),
+          finalOwned ? removeFile(destinationPath) : Promise.resolve()
+        ].map((operation) => operation.then(() => true, () => false)));
+        cleanupResult = cleanup.every(Boolean) ? "success" : "failure";
+      }
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "cleanup-completed",
+        cleanupResult,
+        terminationCategory: cleanupResult === "failure" ? "cleanup" : "unknown"
+      });
+      const safeError = signal.aborted
+        ? createAbortError()
+        : error instanceof AppError
+          ? error
+          : new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Не удалось сохранить файл.", 500);
+      const thrownError = !signal.aborted && !result && !(error instanceof AppError)
         ? error
-        : new AppError(API_ERROR_CODES.DOWNLOAD_FAILED, "Не удалось сохранить файл.", 500);
+        : safeError;
+      let fallbackTermination: SafeDownloadDiagnosticTermination = "network";
+      if (cleanupResult === "failure") fallbackTermination = "cleanup";
+      else if (temporaryFinalizationStarted) fallbackTermination = "filesystem";
+      else if (result && (result.statusCode < 200 || result.statusCode >= 300 || !result.stream)) {
+        fallbackTermination = "response-rejected";
+      }
+      recordSafeDownloadDiagnostic(options.diagnosticObserver, {
+        phase: "failed",
+        cleanupResult,
+        terminationCategory: diagnosticTermination(safeError, signal, fallbackTermination),
+        safeErrorCode: safeError.code,
+        boundedBytesCategory: classifySafeDownloadBytes(sizeBytes, options.maxBytes)
+      });
+      throw thrownError;
     }
 
+    if (!result) throw new AppError(API_ERROR_CODES.DOWNLOAD_FAILED);
     const { stream: _stream, ...metadata } = result;
     return { ...metadata, sizeBytes };
   };
